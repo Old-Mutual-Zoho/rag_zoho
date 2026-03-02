@@ -16,6 +16,7 @@ from src.chatbot.validation import (
     validate_motor_email_frontend,
     validate_uganda_mobile_frontend,
 )
+from src.integrations.policy.premium import premium_service
 
 SERENICARE_OPTIONAL_BENEFITS = [
     {
@@ -157,49 +158,10 @@ class SerenicareFlow:
                 "breakdown": dict
             }
         """
-        plan_id = (plan or {}).get("id", "essential")
-
-        # Base monthly premiums per plan (UGX)
-        base_by_plan = {
-            "essential": Decimal("50000"),
-            "classic": Decimal("80000"),
-            "comprehensive": Decimal("120000"),
-            "premium": Decimal("180000"),
-        }
-        base = base_by_plan.get(plan_id, base_by_plan["essential"])
-
-        # Optional benefits monthly loadings (UGX)
-        optional_prices = {
-            "outpatient": Decimal("15000"),
-            "maternity": Decimal("20000"),
-            "dental": Decimal("8000"),
-            "optical": Decimal("7000"),
-            "covid19": Decimal("5000"),
-        }
-
-        selected = data.get("optional_benefits") or []
-        if isinstance(selected, str):
-            selected = [s.strip() for s in selected.split(",") if s.strip()]
-
-        breakdown: Dict[str, Any] = {
-            "base": float(base),
-            "plan_id": plan_id,
-        }
-
-        opts_total = Decimal("0")
-        for opt in selected:
-            if opt in optional_prices:
-                breakdown[opt] = float(optional_prices[opt])
-                opts_total += optional_prices[opt]
-
-        monthly = base + opts_total
-        annual = monthly * 12
-
-        return {
-            "monthly": float(monthly),
-            "annual": float(annual),
-            "breakdown": breakdown,
-        }
+        return premium_service.calculate_sync(
+            "serenicare",
+            {"data": data, "plan": plan},
+        )
 
     async def complete_flow(self, collected_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         """Finalize the flow from already-collected data.
