@@ -10,7 +10,6 @@ Premium calculation → Payment.
 from __future__ import annotations
 
 import json
-from decimal import Decimal
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,7 +36,6 @@ TRAVEL_INSURANCE_PRODUCTS: List[Dict[str, str]] = [
     },
     {
         "id": "worldwide_elite",
-        "label": "Worldwide Elite",
         "description": "Comprehensive cover for confident world travel",
     },
     {

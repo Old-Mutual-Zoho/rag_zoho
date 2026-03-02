@@ -6,7 +6,6 @@ coverage selection, ID upload, premium calculation, then proceed to payment.
 from __future__ import annotations
 
 import json
-from decimal import Decimal
 from typing import Any, Dict, Optional
 
 from datetime import datetime, date
