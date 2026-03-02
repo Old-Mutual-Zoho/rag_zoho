@@ -1,5 +1,6 @@
 from src.api.escalation import router as escalation_router
 from src.api.endpoints.payments import payments_api
+from src.api.endpoints.premiums import premiums_api
 from src.api.endpoints.agent_webhook import router as agent_webhook_router, slack_service
 import src.api.escalation as escalation_module
 from fastapi import APIRouter
@@ -38,6 +39,7 @@ from src.rag.query import retrieve_context
 from src.utils.product_matcher import ProductMatcher
 from src.utils.rag_config_loader import load_rag_config
 from src.api.endpoints.mock_underwriting import router as mock_router
+from src.api.endpoints.mock_premiums import router as mock_premiums_router
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -91,6 +93,9 @@ app.include_router(escalation_router, prefix="/api/v1")
 
 # Register payments API router
 app.include_router(payments_api, prefix="/api/v1/payments", tags=["Payments"])
+
+# Register premiums API router
+app.include_router(premiums_api, prefix="/api/v1/premiums", tags=["Premiums"])
 
 # Register agent webhook router
 app.include_router(agent_webhook_router, prefix="/api/v1")
@@ -1550,3 +1555,4 @@ async def shutdown_event():
 
 
 app.include_router(mock_router)
+app.include_router(mock_premiums_router)
