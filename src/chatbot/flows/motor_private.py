@@ -26,6 +26,7 @@ from src.chatbot.validation import (
     validate_cover_start_date_range,
     validate_positive_number_field,
 )
+from src.integrations.policy.premium import premium_service
 
 MOTOR_PRIVATE_EXCESS_PARAMETERS = [
     {
@@ -712,17 +713,4 @@ class MotorPrivateFlow:
 
     def _calculate_motor_private_premium(self, data: Dict) -> Dict:
         """Calculate Motor Private premium. Replace with actual business logic as needed."""
-        base_premium = Decimal("1280000")
-        training_levy = Decimal("6400")
-        sticker_fees = Decimal("6000")
-        vat = Decimal("232632")
-        stamp_duty = Decimal("35000")
-        total = base_premium + training_levy + sticker_fees + vat + stamp_duty
-        return {
-            "base_premium": float(base_premium),
-            "training_levy": float(training_levy),
-            "sticker_fees": float(sticker_fees),
-            "vat": float(vat),
-            "stamp_duty": float(stamp_duty),
-            "total": float(total),
-        }
+        return premium_service.calculate_sync("motor_private", {"data": data})
