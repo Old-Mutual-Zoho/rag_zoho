@@ -18,6 +18,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from src.api.main import get_db, get_redis
+from src.api.endpoints.payments import run_underwrite_quote_policy_payment
 from src.chatbot.validation import (
     FormValidationError,
     raise_if_errors,
@@ -245,16 +246,18 @@ def pa_get_draft(draft_id: str, redis_cache=Depends(get_redis)):
 
 
 @api.post("/quote-forms/personal-accident/{draft_id}/submit")
-def pa_submit(
+async def pa_submit(
     draft_id: str,
+    body: Dict[str, Any] | None = None,
     db=Depends(get_db),
     redis_cache=Depends(get_redis),
 ):
     """
-    Validate full draft and persist a Quote in Postgres.
-    Returns: { quote_id: ..., status: "pending" }
+    Validate full draft, run underwriting -> quotation -> policy issuance -> payment,
+    and persist the resulting quote in Postgres.
     """
     try:
+        body = body or {}
         draft = _load_draft(redis_cache, draft_id)
         data = dict(draft.get("data") or {})
 
@@ -264,7 +267,7 @@ def pa_submit(
         _validate_step_2(data)
         final = _validate_step_3(data)
 
-        # Persist quote
+        # Build underwriting payload aligned to the Personal Accident mock/service contract
         sum_assured_str = final["coverLimitAmountUgx"]
         try:
             sum_assured_val = float(sum_assured_str)
@@ -272,20 +275,65 @@ def pa_submit(
             # Should not happen due to validate_in, but defend
             raise FormValidationError(field_errors={"coverLimitAmountUgx": "Invalid amount"})
 
+        workflow_result = await run_underwrite_quote_policy_payment(
+            user_id=draft["user_id"],
+            product_id="personal_accident",
+            underwriting_data={
+                "dob": data.get("dob"),
+                "coverLimitAmountUgx": sum_assured_str,
+                "riskyActivities": data.get("riskyActivities", []),
+                "policyStartDate": data.get("policyStartDate"),
+            },
+            provider=body.get("provider"),
+            phone_number=body.get("phone_number") or data.get("mobile"),
+            currency=str(body.get("currency") or "UGX"),
+            payee_name=str(body.get("payee_name") or "Old Mutual"),
+            payment_before_policy=bool(body.get("payment_before_policy", False)),
+            metadata={"draft_id": draft_id},
+        )
+
+        if workflow_result.get("declined"):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "underwriting_declined",
+                    "decision_status": workflow_result.get("decision_status"),
+                    "underwriting": workflow_result.get("underwriting"),
+                },
+            )
+
+        quotation = workflow_result.get("quotation") or {}
+        payable_amount = float(quotation.get("payable_amount") or 0.0)
+        quote_status = "payment_initiated" if workflow_result.get("payment") else "quoted"
+
+        # Persist quote
         quote = db.create_quote(
             user_id=draft["user_id"],
             product_id="personal_accident",
             product_name="Personal Accident",
-            premium_amount=0.0,
+            premium_amount=payable_amount,
             sum_assured=sum_assured_val,
-            underwriting_data=data,
-            pricing_breakdown=None,
+            underwriting_data={
+                "form_data": data,
+                "workflow": workflow_result,
+            },
+            pricing_breakdown=quotation.get("raw"),
+            status=quote_status,
         )
 
         # Clean up draft
         redis_cache.delete_session(_redis_session_key(draft_id))
 
-        return {"quote_id": str(quote.id), "status": "pending"}
+        return {
+            "quote_id": str(quote.id),
+            "status": quote_status,
+            "workflow": workflow_result.get("workflow"),
+            "underwriting": workflow_result.get("underwriting"),
+            "quotation": workflow_result.get("quotation"),
+            "policy": workflow_result.get("policy"),
+            "payment": workflow_result.get("payment"),
+            "next_action": workflow_result.get("next_action"),
+        }
     except FormValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

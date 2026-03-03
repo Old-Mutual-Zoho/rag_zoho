@@ -30,6 +30,16 @@ class QuotationResponseModel(BaseModel):
     raw: Dict[str, Any] = Field(default_factory=dict)
 
 
+class PolicyResponseModel(BaseModel):
+    policy_id: str
+    quote_id: str
+    status: str
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    currency: str = "UGX"
+    raw: Dict[str, Any] = Field(default_factory=dict)
+
+
 class PaymentGatewayResponseModel(BaseModel):
     reference: str
     provider_reference: str
@@ -88,6 +98,37 @@ def normalize_quotation_response(
             "amount": amount,
             "currency": currency,
             "status": status,
+            "raw": raw,
+        },
+        raw,
+    )
+
+
+def normalize_policy_response(
+    raw: Dict[str, Any],
+    *,
+    fallback_quote_id: Optional[str] = None,
+    fallback_currency: str = "UGX",
+) -> PolicyResponseModel:
+    policy_id = _first_non_empty(raw, "policy_id", "policyId", "id")
+    quote_id = _first_non_empty(raw, "quote_id", "quoteId", default=fallback_quote_id)
+    status = str(_first_non_empty(raw, "status", "policy_status", default="PENDING")).upper()
+    currency = str(_first_non_empty(raw, "currency", default=fallback_currency)).upper()
+    start_date = raw.get("start_date") or raw.get("policy_start_date")
+    end_date = raw.get("end_date") or raw.get("policy_end_date")
+
+    if status not in {"PENDING", "PENDING_PAYMENT", "ISSUED", "ACTIVE", "DECLINED", "REJECTED", "CANCELLED"}:
+        raise IntegrationResponseError(f"Unsupported policy status '{status}'.", payload=raw)
+
+    return _build_model(
+        PolicyResponseModel,
+        {
+            "policy_id": str(policy_id),
+            "quote_id": str(quote_id),
+            "status": status,
+            "start_date": str(start_date) if start_date else None,
+            "end_date": str(end_date) if end_date else None,
+            "currency": currency,
             "raw": raw,
         },
         raw,

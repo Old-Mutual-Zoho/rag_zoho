@@ -1,5 +1,6 @@
 from src.api.escalation import router as escalation_router
 from src.api.endpoints.payments import payments_api
+from src.api.endpoints.policies import policies_api
 from src.api.endpoints.premiums import premiums_api
 from src.api.endpoints.agent_webhook import router as agent_webhook_router, slack_service
 import src.api.escalation as escalation_module
@@ -93,6 +94,8 @@ app.include_router(escalation_router, prefix="/api/v1")
 
 # Register payments API router
 app.include_router(payments_api, prefix="/api/v1/payments", tags=["Payments"])
+# Register policies API router
+app.include_router(policies_api, prefix="/api/v1/policies", tags=["Policies"])
 
 # Register premiums API router
 app.include_router(premiums_api, prefix="/api/v1/premiums", tags=["Premiums"])

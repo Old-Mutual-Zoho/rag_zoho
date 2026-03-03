@@ -226,6 +226,7 @@ class PostgresDB:
         underwriting_data: Optional[Dict[str, Any]] = None,
         pricing_breakdown: Optional[Dict[str, Any]] = None,
         product_name: Optional[str] = None,
+        status: str = "pending",
     ) -> Quote:
         quote_id = str(uuid.uuid4())
         quote = Quote(
@@ -237,6 +238,7 @@ class PostgresDB:
             sum_assured=float(sum_assured) if sum_assured is not None else None,
             underwriting_data=underwriting_data or {},
             pricing_breakdown=pricing_breakdown,
+            status=status,
         )
         self._quotes[quote_id] = quote
         return quote

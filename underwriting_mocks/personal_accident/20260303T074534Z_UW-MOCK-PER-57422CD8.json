@@ -1,0 +1,44 @@
+{
+  "created_at": "2026-03-03T07:45:34.845003+00:00",
+  "product_id": "personal_accident",
+  "input": {
+    "user_id": "u1",
+    "product_id": "personal_accident",
+    "underwriting_data": {
+      "dob": "1992-06-15",
+      "coverLimitAmountUgx": 10000000,
+      "riskyActivities": [],
+      "policyStartDate": "2026-03-04"
+    },
+    "currency": "UGX"
+  },
+  "output": {
+    "quote_id": "UW-MOCK-PER-57422CD8",
+    "premium": 0.0,
+    "currency": "UGX",
+    "decision_status": "DECLINED",
+    "requirements": [
+      {
+        "type": "validation",
+        "field": "coverLimitAmountUgx",
+        "message": "Cover amount is required and must be a valid number."
+      },
+      {
+        "type": "validation",
+        "field": "dob",
+        "message": "Date of birth is required for underwriting eligibility."
+      }
+    ],
+    "product_mock": "personal_accident",
+    "sum_assured": 0.0,
+    "breakdown": {
+      "annual_base": 0.0,
+      "age_modifier_pct": 0.0,
+      "age_modifier_amount": 0.0,
+      "annual_after_age": 0.0,
+      "risk_loading": 0.0,
+      "annual_total": 0.0,
+      "monthly_total": 0.0
+    }
+  }
+}

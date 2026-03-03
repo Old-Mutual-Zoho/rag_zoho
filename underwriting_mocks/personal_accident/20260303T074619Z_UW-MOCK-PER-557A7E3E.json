@@ -1,0 +1,37 @@
+{
+  "created_at": "2026-03-03T07:46:19.612570+00:00",
+  "product_id": "personal_accident",
+  "input": {
+    "dob": "1992-06-15",
+    "coverLimitAmountUgx": 10000000,
+    "riskyActivities": [],
+    "policyStartDate": "2026-03-04",
+    "user_id": "u1",
+    "product_id": "personal_accident",
+    "currency": "UGX",
+    "underwriting_data": {
+      "dob": "1992-06-15",
+      "coverLimitAmountUgx": 10000000,
+      "riskyActivities": [],
+      "policyStartDate": "2026-03-04"
+    }
+  },
+  "output": {
+    "quote_id": "UW-MOCK-PER-557A7E3E",
+    "premium": 1125.0,
+    "currency": "UGX",
+    "decision_status": "APPROVED",
+    "requirements": [],
+    "product_mock": "personal_accident",
+    "sum_assured": 10000000.0,
+    "breakdown": {
+      "annual_base": 15000.0,
+      "age_modifier_pct": -0.1,
+      "age_modifier_amount": -1500.0,
+      "annual_after_age": 13500.0,
+      "risk_loading": 0.0,
+      "annual_total": 13500.0,
+      "monthly_total": 1125.0
+    }
+  }
+}
