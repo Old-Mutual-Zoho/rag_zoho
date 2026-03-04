@@ -210,11 +210,13 @@ def _start_product_draft(*, body: Dict[str, Any], db, redis_cache, product_id: s
         raise FormValidationError(field_errors={"user_id": "user_id is required"})
     user = db.get_or_create_user(phone_number=user_id)
     internal_user_id = str(user.id)
-    draft_id = str(uuid4())
+    # Session-backed mode: when session_id is provided by frontend,
+    # reuse it as the draft identifier to avoid dual-id handling.
+    draft_id = client_session_id or str(uuid4())
     redis_key = _redis_product_session_key(product_id, draft_id)
     draft = {
         "draft_id": draft_id,
-        "session_id": client_session_id or None,
+        "session_id": client_session_id or draft_id,
         "product": product_id,
         "user_id": internal_user_id,
         "data": {},
@@ -222,7 +224,7 @@ def _start_product_draft(*, body: Dict[str, Any], db, redis_cache, product_id: s
         "updated_at": _now_iso(),
     }
     redis_cache.set_session(redis_key, draft, ttl=86400)
-    return {"draft_id": draft_id, "session_id": client_session_id or None}
+    return {"draft_id": draft_id, "session_id": client_session_id or draft_id}
 
 
 def _validate_bool_like(payload: Dict[str, Any], field: str, errors: Dict[str, str]) -> str:
@@ -348,11 +350,13 @@ def pa_start(
         user = db.get_or_create_user(phone_number=user_id)
         internal_user_id = str(user.id)
 
-        draft_id = str(uuid4())
+        # Session-backed mode: when session_id is provided by frontend,
+        # reuse it as the draft identifier to avoid dual-id handling.
+        draft_id = client_session_id or str(uuid4())
         redis_key = _redis_session_key(draft_id)
         draft = {
             "draft_id": draft_id,
-            "session_id": client_session_id or None,
+            "session_id": client_session_id or draft_id,
             "product": "personal_accident",
             "user_id": internal_user_id,
             "data": {},
@@ -361,7 +365,7 @@ def pa_start(
         }
         # TTL: 24h (86400 seconds)
         redis_cache.set_session(redis_key, draft, ttl=86400)
-        return {"draft_id": draft_id, "session_id": client_session_id or None}
+        return {"draft_id": draft_id, "session_id": client_session_id or draft_id}
     except FormValidationError as e:
         raise _validation_http_exception(e)
 
