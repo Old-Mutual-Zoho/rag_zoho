@@ -48,6 +48,17 @@ def _now_iso() -> str:
     return datetime.utcnow().isoformat()
 
 
+def _validation_http_exception(err: FormValidationError) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail={
+            "error": "validation_error",
+            "message": err.message,
+            "field_errors": err.field_errors,
+        },
+    )
+
+
 def _validate_step_0(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Step 0: firstName, lastName, middleName?
@@ -214,6 +225,79 @@ def _to_float(v: Any, field: str, errors: Dict[str, str], *, min_value: float | 
     return val
 
 
+def _to_bool(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    s = str(v or "").strip().lower()
+    return s in {"1", "true", "yes", "y", "on"}
+
+
+def _member_dob_value(member: Dict[str, Any]) -> str:
+    return str(
+        member.get("dob")
+        or member.get("D.O.B")
+        or member.get("date_of_birth")
+        or ""
+    ).strip()
+
+
+def _validate_sereni_members(members: Any, errors: Dict[str, str]) -> list[Dict[str, Any]]:
+    normalized: list[Dict[str, Any]] = []
+    if not isinstance(members, list) or not members:
+        add_error(errors, "mainMembers", "At least one main member is required")
+        return normalized
+
+    today = date.today()
+    for idx, member in enumerate(members):
+        if not isinstance(member, dict):
+            add_error(errors, f"mainMembers[{idx}]", "Member must be an object")
+            continue
+
+        include_spouse = _to_bool(member.get("includeSpouse", False))
+        include_children = _to_bool(member.get("includeChildren", False))
+        if include_spouse and include_children:
+            add_error(
+                errors,
+                f"mainMembers[{idx}]",
+                "Only one of includeSpouse or includeChildren can be true",
+            )
+
+        dob_raw = _member_dob_value(member)
+        if not dob_raw:
+            add_error(errors, f"mainMembers[{idx}].dob", "D.O.B is required")
+            continue
+
+        d = None
+        try:
+            d = date.fromisoformat(dob_raw)
+        except Exception:
+            add_error(errors, f"mainMembers[{idx}].dob", "D.O.B must be a valid date (YYYY-MM-DD)")
+            continue
+
+        if d >= today:
+            add_error(errors, f"mainMembers[{idx}].dob", "D.O.B must be in the past")
+            continue
+
+        age = _to_int(member.get("age"), f"mainMembers[{idx}].age", errors, min_value=0)
+        calc_age = today.year - d.year - ((today.month, today.day) < (d.month, d.day))
+        if age != calc_age:
+            add_error(errors, f"mainMembers[{idx}].age", f"Age must match D.O.B (expected {calc_age})")
+
+        if include_spouse and calc_age < 19:
+            add_error(errors, f"mainMembers[{idx}].dob", "Spouse must be at least 19 years old")
+
+        normalized.append(
+            {
+                **member,
+                "includeSpouse": include_spouse,
+                "includeChildren": include_children,
+                "dob": dob_raw,
+                "age": age,
+            }
+        )
+    return normalized
+
+
 @api.post("/quote-forms/personal-accident/start")
 def pa_start(
     body: Dict[str, Any],
@@ -248,10 +332,7 @@ def pa_start(
         redis_cache.set_session(session_id, draft, ttl=86400)
         return {"draft_id": draft_id}
     except FormValidationError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors},
-        )
+        raise _validation_http_exception(e)
 
 
 # ============================================================================
@@ -321,14 +402,16 @@ def motor_start(body: Dict[str, Any], db=Depends(get_db), redis_cache=Depends(ge
     try:
         return _start_product_draft(body=body, db=db, redis_cache=redis_cache, product_id="motor_private")
     except FormValidationError as e:
-        raise HTTPException(status_code=422, detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors})
+        raise _validation_http_exception(e)
 
 
 @api.put("/quote-forms/motor-private/{draft_id}/steps/{step_index}")
 def motor_update_step(draft_id: str, step_index: int, body: Dict[str, Any], redis_cache=Depends(get_redis)):
     try:
         if step_index < 0 or step_index > 3:
-            raise HTTPException(status_code=400, detail="Invalid step index")
+            raise FormValidationError(
+                field_errors={"step_index": "Invalid step index. Expected a value from 0 to 3."}
+            )
         draft = _load_product_draft(redis_cache, "motor_private", draft_id)
         step_data = [_validate_motor_step_0, _validate_motor_step_1, _validate_motor_step_2, _validate_motor_step_3][step_index](body)
         data = dict(draft.get("data") or {})
@@ -339,7 +422,7 @@ def motor_update_step(draft_id: str, step_index: int, body: Dict[str, Any], redi
         redis_cache.set_session(_redis_product_session_key("motor_private", draft_id), draft, ttl=86400)
         return draft
     except FormValidationError as e:
-        raise HTTPException(status_code=422, detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors})
+        raise _validation_http_exception(e)
 
 
 @api.get("/quote-forms/motor-private/{draft_id}")
@@ -407,7 +490,7 @@ async def motor_submit(draft_id: str, body: Dict[str, Any] | None = None, db=Dep
             "next_action": workflow_result.get("next_action"),
         }
     except FormValidationError as e:
-        raise HTTPException(status_code=422, detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors})
+        raise _validation_http_exception(e)
 
 
 # ============================================================================
@@ -417,10 +500,25 @@ def _validate_sereni_step_0(payload: Dict[str, Any]) -> Dict[str, Any]:
     errors: Dict[str, str] = {}
     first_name = require_str(payload, "firstName", errors, label="First Name")
     last_name = require_str(payload, "lastName", errors, label="Last Name")
+    middle_name = optional_str(payload, "middleName")
+    if first_name and (len(first_name) < 2 or len(first_name) > 50):
+        add_error(errors, "firstName", "First Name must be 2-50 characters")
+    if last_name and (len(last_name) < 2 or len(last_name) > 50):
+        add_error(errors, "lastName", "Last Name must be 2-50 characters")
+    if middle_name and len(middle_name) > 50:
+        add_error(errors, "middleName", "Middle Name must be at most 50 characters")
     mobile = validate_phone_ug(payload.get("mobile", ""), errors, field="mobile")
     email = validate_email(payload.get("email", ""), errors, field="email")
+    if email and len(email) > 100:
+        add_error(errors, "email", "Email must be at most 100 characters")
     raise_if_errors(errors)
-    return {"firstName": first_name, "lastName": last_name, "mobile": mobile, "email": email}
+    return {
+        "firstName": first_name,
+        "lastName": last_name,
+        "middleName": middle_name,
+        "mobile": mobile,
+        "email": email,
+    }
 
 
 def _validate_sereni_step_1(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -450,26 +548,17 @@ def _validate_sereni_step_1(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def _validate_sereni_step_2(payload: Dict[str, Any]) -> Dict[str, Any]:
     errors: Dict[str, str] = {}
-    members = payload.get("mainMembers", [])
-    if not isinstance(members, list) or not members:
-        add_error(errors, "mainMembers", "At least one main member is required")
-    else:
-        for idx, m in enumerate(members):
-            if not isinstance(m, dict):
-                add_error(errors, "mainMembers", "Each main member must be an object")
-                break
-            validate_date_iso(m.get("dob", ""), errors, f"mainMembers[{idx}].dob", required=True, not_future=True)
+    members = _validate_sereni_members(payload.get("mainMembers", []), errors)
     raise_if_errors(errors)
     return {"mainMembers": members}
 
 
 def _validate_sereni_step_3(payload: Dict[str, Any]) -> Dict[str, Any]:
-    errors: Dict[str, str] = {}
-    dob = validate_date_iso(payload.get("date_of_birth", ""), errors, "date_of_birth", required=True, not_future=True)
-    include_spouse = bool(payload.get("include_spouse", False))
-    include_children = bool(payload.get("include_children", False))
-    add_member = bool(payload.get("add_another_main_member", False))
-    raise_if_errors(errors)
+    # Optional final/preferences step for frontend parity; no required fields.
+    dob = str(payload.get("date_of_birth") or "").strip()
+    include_spouse = _to_bool(payload.get("include_spouse", False))
+    include_children = _to_bool(payload.get("include_children", False))
+    add_member = _to_bool(payload.get("add_another_main_member", False))
     return {
         "date_of_birth": dob,
         "include_spouse": include_spouse,
@@ -483,14 +572,16 @@ def serenicare_start(body: Dict[str, Any], db=Depends(get_db), redis_cache=Depen
     try:
         return _start_product_draft(body=body, db=db, redis_cache=redis_cache, product_id="serenicare")
     except FormValidationError as e:
-        raise HTTPException(status_code=422, detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors})
+        raise _validation_http_exception(e)
 
 
 @api.put("/quote-forms/serenicare/{draft_id}/steps/{step_index}")
 def serenicare_update_step(draft_id: str, step_index: int, body: Dict[str, Any], redis_cache=Depends(get_redis)):
     try:
         if step_index < 0 or step_index > 3:
-            raise HTTPException(status_code=400, detail="Invalid step index")
+            raise FormValidationError(
+                field_errors={"step_index": "Invalid step index. Expected a value from 0 to 3."}
+            )
         draft = _load_product_draft(redis_cache, "serenicare", draft_id)
         step_data = [_validate_sereni_step_0, _validate_sereni_step_1, _validate_sereni_step_2, _validate_sereni_step_3][step_index](body)
         data = dict(draft.get("data") or {})
@@ -501,7 +592,7 @@ def serenicare_update_step(draft_id: str, step_index: int, body: Dict[str, Any],
         redis_cache.set_session(_redis_product_session_key("serenicare", draft_id), draft, ttl=86400)
         return draft
     except FormValidationError as e:
-        raise HTTPException(status_code=422, detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors})
+        raise _validation_http_exception(e)
 
 
 @api.get("/quote-forms/serenicare/{draft_id}")
@@ -517,8 +608,11 @@ async def serenicare_submit(draft_id: str, body: Dict[str, Any] | None = None, d
         data = dict(draft.get("data") or {})
         _validate_sereni_step_0(data)
         s1 = _validate_sereni_step_1(data)
-        _validate_sereni_step_2(data)
+        s2 = _validate_sereni_step_2(data)
         s3 = _validate_sereni_step_3(data)
+        primary_member_dob = ""
+        if s2.get("mainMembers"):
+            primary_member_dob = str((s2["mainMembers"][0] or {}).get("dob") or "")
         workflow_result = await run_underwrite_quote_policy_payment(
             user_id=draft["user_id"],
             product_id="serenicare",
@@ -526,7 +620,7 @@ async def serenicare_submit(draft_id: str, body: Dict[str, Any] | None = None, d
                 "plan_option": {"id": s1.get("planType")},
                 "optional_benefits": s1.get("optionalBenefits", []),
                 "medical_conditions": s1.get("seriousConditions") == "yes",
-                "dob": s3.get("date_of_birth"),
+                "dob": s3.get("date_of_birth") or primary_member_dob,
                 "policyStartDate": date.today().isoformat(),
             },
             provider=body.get("provider"),
@@ -570,7 +664,7 @@ async def serenicare_submit(draft_id: str, body: Dict[str, Any] | None = None, d
             "next_action": workflow_result.get("next_action"),
         }
     except FormValidationError as e:
-        raise HTTPException(status_code=422, detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors})
+        raise _validation_http_exception(e)
 
 
 # ============================================================================
@@ -645,14 +739,16 @@ def travel_start(body: Dict[str, Any], db=Depends(get_db), redis_cache=Depends(g
     try:
         return _start_product_draft(body=body, db=db, redis_cache=redis_cache, product_id="travel_insurance")
     except FormValidationError as e:
-        raise HTTPException(status_code=422, detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors})
+        raise _validation_http_exception(e)
 
 
 @api.put("/quote-forms/travel-insurance/{draft_id}/steps/{step_index}")
 def travel_update_step(draft_id: str, step_index: int, body: Dict[str, Any], redis_cache=Depends(get_redis)):
     try:
         if step_index < 0 or step_index > 3:
-            raise HTTPException(status_code=400, detail="Invalid step index")
+            raise FormValidationError(
+                field_errors={"step_index": "Invalid step index. Expected a value from 0 to 3."}
+            )
         draft = _load_product_draft(redis_cache, "travel_insurance", draft_id)
         step_data = [_validate_travel_step_0, _validate_travel_step_1, _validate_travel_step_2, _validate_travel_step_3][step_index](body)
         data = dict(draft.get("data") or {})
@@ -663,7 +759,7 @@ def travel_update_step(draft_id: str, step_index: int, body: Dict[str, Any], red
         redis_cache.set_session(_redis_product_session_key("travel_insurance", draft_id), draft, ttl=86400)
         return draft
     except FormValidationError as e:
-        raise HTTPException(status_code=422, detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors})
+        raise _validation_http_exception(e)
 
 
 @api.get("/quote-forms/travel-insurance/{draft_id}")
@@ -733,7 +829,7 @@ async def travel_submit(draft_id: str, body: Dict[str, Any] | None = None, db=De
             "next_action": workflow_result.get("next_action"),
         }
     except FormValidationError as e:
-        raise HTTPException(status_code=422, detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors})
+        raise _validation_http_exception(e)
 
 
 @api.put("/quote-forms/personal-accident/{draft_id}/steps/{step_index}")
@@ -750,7 +846,9 @@ def pa_update_step(
     """
     try:
         if step_index < 0 or step_index > 3:
-            raise HTTPException(status_code=400, detail="Invalid step index")
+            raise FormValidationError(
+                field_errors={"step_index": "Invalid step index. Expected a value from 0 to 3."}
+            )
 
         draft = _load_draft(redis_cache, draft_id)
 
@@ -777,10 +875,7 @@ def pa_update_step(
 
         return draft
     except FormValidationError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors},
-        )
+        raise _validation_http_exception(e)
 
 
 @api.get("/quote-forms/personal-accident/{draft_id}")
@@ -879,7 +974,4 @@ async def pa_submit(
             "next_action": workflow_result.get("next_action"),
         }
     except FormValidationError as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors},
-        )
+        raise _validation_http_exception(e)

@@ -62,6 +62,8 @@ class SerenicareController:
 
         # Validate email
         email = validate_motor_email_frontend(payload.get("email", ""), errors, field="email")
+        if email and len(email) > 100:
+            errors["email"] = "Email must be at most 100 characters."
 
         # Validate planType
         plan_type = validate_enum(
@@ -99,11 +101,14 @@ class SerenicareController:
             from datetime import date, datetime as dt
             for idx, member in enumerate(main_members):
                 m_err = {}
+                if not isinstance(member, dict):
+                    errors[f"mainMembers[{idx}]"] = "Member must be an object."
+                    continue
                 # Mutual exclusion
                 if member.get("includeSpouse") and member.get("includeChildren"):
                     m_err["includeSpouse"] = "Cannot select both spouse and children for the same member."
                 # D.O.B
-                dob_str = member.get("dob", "")
+                dob_str = str(member.get("dob") or member.get("D.O.B") or member.get("date_of_birth") or "").strip()
                 try:
                     dob = dt.fromisoformat(dob_str).date()
                 except Exception:
@@ -116,12 +121,19 @@ class SerenicareController:
                         m_err["dob"] = "Spouse must be at least 19 years old."
                 # Age
                 age = member.get("age")
-                if dob and age is not None:
+                if age is None or str(age).strip() == "":
+                    m_err["age"] = "Age is required."
+                elif dob:
                     # Calculate age from dob
                     today = date.today()
                     calc_age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
-                    if int(age) != calc_age:
-                        m_err["age"] = f"Age must match D.O.B (expected {calc_age})."
+                    try:
+                        age_i = int(age)
+                    except Exception:
+                        m_err["age"] = "Age must be a whole number."
+                    else:
+                        if age_i != calc_age:
+                            m_err["age"] = f"Age must match D.O.B (expected {calc_age})."
                 if m_err:
                     errors[f"mainMembers[{idx}]"] = ", ".join([f"{k}: {v}" for k, v in m_err.items()])
 
