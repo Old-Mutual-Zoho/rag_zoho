@@ -2,16 +2,13 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt requirements-prod.txt ./
-RUN pip install --no-cache-dir -r requirements.txt -r requirements-prod.txt
+COPY requirements-prod.txt ./
+RUN pip install --prefer-binary -r requirements-prod.txt
 
 COPY . .
 
