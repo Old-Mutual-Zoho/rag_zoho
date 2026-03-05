@@ -1,6 +1,6 @@
 """
-Serenicare flow - Collect cover personalization, optional benefits, medical conditions,
-plan selection, user details, then proceed to payment.
+Serenicare flow - Collect user details first, then plan selection, optional benefits,
+medical conditions, cover personalization, and proceed to payment.
 """
 
 from __future__ import annotations
@@ -111,16 +111,16 @@ SERENICARE_PLANS = [
 
 class SerenicareFlow:
     """
-    Guided flow for Serenicare: cover personalization, optional benefits,
-    medical conditions, plan selection, user details, then payment.
+    Guided flow for Serenicare: about you, plan selection, optional benefits,
+    medical conditions, cover personalization, then payment.
     """
 
     STEPS = [
-        "cover_personalization",
+        "about_you",
+        "plan_selection",
         "optional_benefits",
         "medical_conditions",
-        "plan_selection",
-        "about_you",
+        "cover_personalization",
         "premium_and_download",
         "choose_plan_and_pay",
     ]
@@ -202,15 +202,15 @@ class SerenicareFlow:
             payload = {"_raw": user_input} if user_input else {}
 
         if current_step == 0:
-            return await self._step_cover_personalization(payload, collected_data, user_id)
-        if current_step == 1:
-            return await self._step_optional_benefits(payload, collected_data, user_id)
-        if current_step == 2:
-            return await self._step_medical_conditions(payload, collected_data, user_id)
-        if current_step == 3:
-            return await self._step_plan_selection(payload, collected_data, user_id)
-        if current_step == 4:
             return await self._step_about_you(payload, collected_data, user_id)
+        if current_step == 1:
+            return await self._step_plan_selection(payload, collected_data, user_id)
+        if current_step == 2:
+            return await self._step_optional_benefits(payload, collected_data, user_id)
+        if current_step == 3:
+            return await self._step_medical_conditions(payload, collected_data, user_id)
+        if current_step == 4:
+            return await self._step_cover_personalization(payload, collected_data, user_id)
         if current_step == 5:
             return await self._step_premium_and_download(payload, collected_data, user_id)
         if current_step == 6:
@@ -260,7 +260,7 @@ class SerenicareFlow:
                     },
                 ],
             },
-            "next_step": 1,
+            "next_step": 5,
             "collected_data": data,
         }
 
@@ -279,7 +279,7 @@ class SerenicareFlow:
                 "message": "Select any optional benefits you want to add",
                 "options": SERENICARE_OPTIONAL_BENEFITS,
             },
-            "next_step": 2,
+            "next_step": 3,
             "collected_data": data,
         }
 
@@ -302,7 +302,7 @@ class SerenicareFlow:
                 "options": [{"id": "yes", "label": "Yes"}, {"id": "no", "label": "No"}],
                 "required": True,
             },
-            "next_step": 3,
+            "next_step": 4,
             "collected_data": data,
         }
 
@@ -334,7 +334,7 @@ class SerenicareFlow:
                     for p in SERENICARE_PLANS
                 ],
             },
-            "next_step": 4,
+            "next_step": 2,
             "collected_data": data,
         }
 
@@ -401,7 +401,7 @@ class SerenicareFlow:
                     {"name": "email", "label": "Email", "type": "email", "required": True},
                 ],
             },
-            "next_step": 5,
+            "next_step": 1,
             "collected_data": data,
         }
 
@@ -432,7 +432,7 @@ class SerenicareFlow:
         action = (payload.get("action") or payload.get("_raw") or "").strip().lower()
         if "view" in action or "plan" in action:
             out = await self._step_plan_selection(payload, data, user_id)
-            out["next_step"] = 3
+            out["next_step"] = 1
             return out
         plan = data.get("plan_option") or SERENICARE_PLANS[0]
         premium = self._calculate_serenicare_premium(data, plan)
