@@ -122,6 +122,31 @@ class EscalationSession:
     updated_at: datetime = field(default_factory=datetime.utcnow)
 
 
+@dataclass
+class PaymentTransaction:
+    reference: str
+    provider: str
+    provider_reference: str
+    phone_number: str
+    amount: float
+    currency: str
+    status: str = "PENDING"
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
+class PaymentAuditEvent:
+    id: str
+    payment_reference: str
+    event_type: str
+    status_from: Optional[str] = None
+    status_to: Optional[str] = None
+    payload: Dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=datetime.utcnow)
+
+
 class PostgresDB:
     """
     In-memory stand‑in for a Postgres-backed data access layer.
@@ -144,6 +169,9 @@ class PostgresDB:
         self._serenicare_applications: Dict[str, SerenicareApplication] = {}
         # Escalation state by session_id
         self._escalation_sessions: Dict[str, EscalationSession] = {}
+        # Payment persistence
+        self._payment_transactions: Dict[str, PaymentTransaction] = {}
+        self._payment_audit_events: List[PaymentAuditEvent] = []
 
     # ------------------------------------------------------------------ #
     # Schema / lifecycle
@@ -245,6 +273,85 @@ class PostgresDB:
 
     def get_quote(self, quote_id: str) -> Optional[Quote]:
         return self._quotes.get(str(quote_id))
+
+    # ------------------------------------------------------------------ #
+    # Payments
+    # ------------------------------------------------------------------ #
+    def create_payment_transaction(
+        self,
+        *,
+        reference: str,
+        provider: str,
+        provider_reference: str,
+        phone_number: str,
+        amount: float,
+        currency: str,
+        status: str = "PENDING",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> PaymentTransaction:
+        now = datetime.utcnow()
+        txn = PaymentTransaction(
+            reference=str(reference),
+            provider=str(provider),
+            provider_reference=str(provider_reference),
+            phone_number=str(phone_number),
+            amount=float(amount),
+            currency=str(currency),
+            status=str(status),
+            metadata=dict(metadata or {}),
+            created_at=now,
+            updated_at=now,
+        )
+        self._payment_transactions[txn.reference] = txn
+        return txn
+
+    def get_payment_transaction_by_reference(self, reference: str) -> Optional[PaymentTransaction]:
+        return self._payment_transactions.get(str(reference))
+
+    def update_payment_transaction_status(
+        self,
+        reference: str,
+        status: str,
+        *,
+        provider_reference: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[PaymentTransaction]:
+        txn = self._payment_transactions.get(str(reference))
+        if not txn:
+            return None
+        txn.status = str(status)
+        if provider_reference:
+            txn.provider_reference = str(provider_reference)
+        if metadata:
+            txn.metadata = {**txn.metadata, **metadata}
+        txn.updated_at = datetime.utcnow()
+        self._payment_transactions[txn.reference] = txn
+        return txn
+
+    def add_payment_audit_event(
+        self,
+        *,
+        payment_reference: str,
+        event_type: str,
+        payload: Optional[Dict[str, Any]] = None,
+        status_from: Optional[str] = None,
+        status_to: Optional[str] = None,
+    ) -> PaymentAuditEvent:
+        event = PaymentAuditEvent(
+            id=str(uuid.uuid4()),
+            payment_reference=str(payment_reference),
+            event_type=str(event_type),
+            status_from=status_from,
+            status_to=status_to,
+            payload=dict(payload or {}),
+        )
+        self._payment_audit_events.append(event)
+        return event
+
+    def list_payment_audit_events(self, payment_reference: str) -> List[PaymentAuditEvent]:
+        events = [e for e in self._payment_audit_events if e.payment_reference == str(payment_reference)]
+        events.sort(key=lambda item: item.created_at)
+        return events
 
     # ------------------------------------------------------------------ #
     # Personal Accident application persistence
