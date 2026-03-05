@@ -4,7 +4,7 @@ Used by postgres_real when USE_POSTGRES_CONVERSATIONS and DATABASE_URL are set.
 """
 from __future__ import annotations
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 from sqlalchemy import JSON, Boolean, DateTime, Float, String, Text, ForeignKey
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -86,6 +86,47 @@ class Quote(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending")
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.utcnow() + timedelta(days=30))
+
+
+class PaymentTransaction(Base):
+    __tablename__ = "payment_transactions"
+
+    reference: Mapped[str] = mapped_column(String(128), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    provider_reference: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    phone_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True, default="PENDING")
+    transaction_metadata: Mapped[Dict[str, Any]] = mapped_column("metadata", JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    audit_events: Mapped[List["PaymentAuditEvent"]] = relationship(
+        "PaymentAuditEvent",
+        back_populates="transaction",
+        cascade="all, delete-orphan",
+        order_by="PaymentAuditEvent.created_at",
+    )
+
+
+class PaymentAuditEvent(Base):
+    __tablename__ = "payment_audit_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    payment_reference: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("payment_transactions.reference"),
+        nullable=False,
+        index=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    status_from: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    status_to: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    payload: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    transaction: Mapped["PaymentTransaction"] = relationship("PaymentTransaction", back_populates="audit_events")
 
 
 # ======================================================================
