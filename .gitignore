@@ -64,5 +64,11 @@ RAILWAY_DEPLOYMENT.md
 SESSIONS_AND_STORAGE.md
 IMPLEMENTATION_SUMMARY.md
 LOOPHOLES_ANALYSIS.md
+FRONTEND_VALIDATION_GUIDE.md
+VALIDATION_UX_FLOW.md
+TWO_LAYER_VALIDATION_ARCHITECTURE.txt
 scripts/test_extraction.py
 scripts/test_scraper.py
+scripts/demo_frontend_validation.py
+scripts/demo_progressive_disclosure.py
+scripts/demo_smart_filtering.py
