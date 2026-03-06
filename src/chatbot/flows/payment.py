@@ -2,9 +2,13 @@
 Payment flow - Handle premium payments
 """
 
-from typing import Dict
+import json
+from typing import Any, Dict
 from datetime import datetime
 import uuid
+
+from src.integrations.contracts.interfaces import PaymentRequest
+from src.integrations.payments.payment_service import PaymentService
 
 
 class PaymentFlow:
@@ -13,6 +17,7 @@ class PaymentFlow:
 
     def __init__(self, db):
         self.db = db
+        self.payment_service = PaymentService(db=db)
 
     async def start(self, user_id: str, initial_data: Dict) -> Dict:
         """Start payment flow"""
@@ -79,17 +84,32 @@ class PaymentFlow:
             }
 
         elif current_step == 1:  # Payment details
-            payment_method = user_input
+            payment_method = self._extract_payment_method(user_input)
             collected_data["payment_method"] = payment_method
 
             if payment_method == "mobile_money":
+                default_phone = self._extract_default_phone(collected_data)
                 return {
                     "response": {
                         "type": "form",
                         "message": "📱 Enter your mobile money details",
                         "fields": [
-                            {"name": "provider", "label": "Provider", "type": "select", "options": ["MTN Mobile Money", "Airtel Money"], "required": True},
-                            {"name": "phone_number", "label": "Phone Number", "type": "tel", "placeholder": "07XX XXX XXX", "required": True},
+                            {
+                                "name": "provider",
+                                "label": "Provider",
+                                "type": "select",
+                                "options": ["mtn", "airtel", "flexipay"],
+                                "required": True,
+                                "defaultValue": "mtn",
+                            },
+                            {
+                                "name": "phone_number",
+                                "label": "Phone Number",
+                                "type": "tel",
+                                "placeholder": "07XX XXX XXX",
+                                "required": True,
+                                "defaultValue": default_phone,
+                            },
                         ],
                     },
                     "next_step": 2,
@@ -133,46 +153,98 @@ class PaymentFlow:
                 }
 
         elif current_step == 2:  # Process payment
-            payment_details = user_input
+            payment_details = self._normalize_payment_details(user_input, collected_data)
             collected_data["payment_details"] = payment_details
-
-            # Create payment record
-            payment = self._create_payment_record(
-                quote=quote, payment_method=collected_data["payment_method"], payment_details=payment_details, user_id=user_id
-            )
 
             # For mobile money, initiate payment
             if collected_data["payment_method"] == "mobile_money":
-                payment_result = await self._initiate_mobile_money_payment(payment_details, premium_amount)
+                provider = str(payment_details.get("provider") or "mtn").strip().lower()
+                phone_number = str(payment_details.get("phone_number") or "").strip()
+
+                if not phone_number:
+                    return {
+                        "response": {
+                            "type": "validation_error",
+                            "message": "Phone number is required to initiate mobile money payment.",
+                            "errors": {"phone_number": "Phone number is required"},
+                        },
+                        "next_step": 2,
+                        "collected_data": collected_data,
+                    }
+
+                request = PaymentRequest(
+                    reference=str(quote.id),
+                    phone_number=phone_number,
+                    amount=float(premium_amount),
+                    currency="UGX",
+                    description=f"Payment for quote {quote.id}",
+                    metadata={
+                        "product_id": getattr(quote, "product_id", "personal_accident"),
+                        "user_id": user_id,
+                        "payment_method": "mobile_money",
+                    },
+                )
+
+                try:
+                    payment_result = await self.payment_service.initiate_payment(provider=provider, request=request)
+                except ValueError as exc:
+                    return {
+                        "response": {
+                            "type": "validation_error",
+                            "message": str(exc),
+                            "errors": {"provider": str(exc)},
+                        },
+                        "next_step": 2,
+                        "collected_data": collected_data,
+                    }
+
+                collected_data["payment_reference"] = payment_result.reference
+                collected_data["payment_id"] = payment_result.reference
 
                 return {
                     "response": {
                         "type": "payment_initiated",
                         "message": "✅ Payment request sent to your phone",
                         "instructions": "Please enter your PIN to complete the payment",
-                        "transaction_ref": payment_result["transaction_ref"],
-                        "status": "pending",
+                        "transaction_ref": payment_result.provider_reference,
+                        "reference": payment_result.reference,
+                        "status": str(getattr(payment_result.status, "value", payment_result.status)),
                     },
                     "next_step": 3,
                     "collected_data": collected_data,
-                    "data": {"payment_id": payment.id},
+                    "data": {
+                        "payment_reference": payment_result.reference,
+                        "provider_reference": payment_result.provider_reference,
+                    },
                 }
 
             return {
-                "response": {"type": "payment_pending", "message": "Payment processing...", "payment_id": str(payment.id)},
+                "response": {
+                    "type": "payment_pending",
+                    "message": "Payment processing...",
+                    "payment_method": collected_data.get("payment_method"),
+                },
                 "next_step": 3,
                 "collected_data": collected_data,
             }
 
         elif current_step == 3:  # Payment confirmation
             # Check payment status
-            payment_status = await self._check_payment_status(collected_data.get("payment_id"))
+            payment_reference = collected_data.get("payment_reference") or collected_data.get("payment_id") or str(quote.id)
+            payment_status = await self._check_payment_status(payment_reference)
 
             if payment_status == "completed":
                 # Create application
-                application = self.db.create_application(
-                    user_id=user_id, quote_id=quote.id, product_id=quote.product_id, application_data=collected_data, status="submitted"
-                )
+                application = None
+                create_application = getattr(self.db, "create_application", None)
+                if callable(create_application):
+                    application = create_application(
+                        user_id=user_id,
+                        quote_id=quote.id,
+                        product_id=quote.product_id,
+                        application_data=collected_data,
+                        status="submitted",
+                    )
 
                 return {
                     "response": {
@@ -187,7 +259,11 @@ class PaymentFlow:
                         "support": {"email": "support@oldmutual.co.ug", "phone": "+256 753 888232"},
                     },
                     "complete": True,
-                    "data": {"application_id": str(application.id), "payment_status": "completed"},
+                    "data": {
+                        "application_id": str(application.id) if application and getattr(application, "id", None) else None,
+                        "payment_status": "completed",
+                        "payment_reference": payment_reference,
+                    },
                 }
             elif payment_status == "failed":
                 return {
@@ -224,11 +300,80 @@ class PaymentFlow:
         # For now, return mock
         return {"transaction_ref": f"MM{uuid.uuid4().hex[:10].upper()}", "status": "pending"}
 
-    async def _check_payment_status(self, payment_id):
-        """Check payment status"""
-        # This would check with payment provider
-        # For now, return mock success
-        return "completed"
+    async def _check_payment_status(self, payment_reference: str):
+        """Check payment status from payment service."""
+        if not payment_reference:
+            return "pending"
+
+        try:
+            status = self.payment_service.get_payment_status(payment_reference).status.value
+        except KeyError:
+            return "pending"
+
+        normalized = str(status).strip().upper()
+        if normalized == "SUCCESS":
+            return "completed"
+        if normalized == "FAILED":
+            return "failed"
+        return "pending"
+
+    def _extract_payment_method(self, user_input: Any) -> str:
+        if isinstance(user_input, dict):
+            method = user_input.get("payment_method") or user_input.get("method") or user_input.get("id")
+        else:
+            method = user_input
+
+        value = str(method or "").strip().lower()
+        aliases = {
+            "mobile_money": "mobile_money",
+            "mobile money": "mobile_money",
+            "mobile": "mobile_money",
+            "bank_transfer": "bank_transfer",
+            "bank transfer": "bank_transfer",
+            "bank": "bank_transfer",
+            "card": "card",
+        }
+        return aliases.get(value, value)
+
+    def _normalize_payment_details(self, user_input: Any, collected_data: Dict[str, Any]) -> Dict[str, Any]:
+        if isinstance(user_input, dict):
+            payload = dict(user_input)
+        else:
+            payload = {}
+            text = str(user_input or "").strip()
+            if text.startswith("{"):
+                try:
+                    payload = json.loads(text)
+                except json.JSONDecodeError:
+                    payload = {"raw": text}
+            elif text:
+                payload = {"raw": text}
+
+        if "provider" in payload:
+            payload["provider"] = str(payload["provider"]).strip().lower().replace(" ", "_")
+
+        phone = payload.get("phone_number") or payload.get("phone") or payload.get("msisdn")
+        if not phone:
+            fallback_phone = self._extract_default_phone(collected_data)
+            if fallback_phone:
+                payload["phone_number"] = fallback_phone
+        else:
+            payload["phone_number"] = str(phone).strip()
+
+        return payload
+
+    def _extract_default_phone(self, collected_data: Dict[str, Any]) -> str:
+        quote = collected_data.get("quote")
+        underwriting_data = getattr(quote, "underwriting_data", {}) or {}
+        quick_quote = underwriting_data.get("quick_quote", {}) if isinstance(underwriting_data, dict) else {}
+
+        return (
+            quick_quote.get("mobile")
+            or quick_quote.get("mobile_number")
+            or underwriting_data.get("mobile")
+            or underwriting_data.get("phone_number")
+            or ""
+        )
 
     def _generate_policy_number(self):
         """Generate policy number"""
