@@ -25,6 +25,7 @@ from src.chatbot.validation import (
     validate_in,
     validate_phone_ug,
 )
+from src.chatbot.flows.field_filter import filter_missing_fields, add_validation_hints_to_fields, add_frontend_validation_rules
 from src.integrations.policy.premium import premium_service
 
 # Travel insurance product cards (from product selection screen)
@@ -258,48 +259,76 @@ class TravelInsuranceFlow:
         data: Dict[str, Any],
         user_id: str,
     ) -> Dict[str, Any]:
+        errors: Dict[str, str] = {}
+        
         if payload and "_raw" not in payload:
-            errors: Dict[str, str] = {}
             require_str(payload, "first_name", errors, label="First Name")
             require_str(payload, "surname", errors, label="Surname")
             validate_phone_ug(payload.get("phone_number", ""), errors, field="phone_number")
             validate_email(payload.get("email", ""), errors, field="email")
-            raise_if_errors(errors)
+            
+            # If no errors, save and proceed
+            if not errors:
+                data["about_you"] = {
+                    "first_name": payload.get("first_name", ""),
+                    "middle_name": payload.get("middle_name", ""),
+                    "surname": payload.get("surname", ""),
+                    "phone_number": payload.get("phone_number", ""),
+                    "email": payload.get("email", ""),
+                }
 
-            data["about_you"] = {
-                "first_name": payload.get("first_name", ""),
-                "middle_name": payload.get("middle_name", ""),
-                "surname": payload.get("surname", ""),
-                "phone_number": payload.get("phone_number", ""),
-                "email": payload.get("email", ""),
-            }
+                app_id = data.get("application_id")
+                if self.controller and app_id:
+                    self.controller.update_about_you(app_id, payload)
+                
+                # Proceed to next step
+                return await self._step_travel_party_and_trip({}, data, user_id)
 
-            app_id = data.get("application_id")
-            if self.controller and app_id:
-                self.controller.update_about_you(app_id, payload)
+        # Pre-fill from existing data
+        prefilled = data.get("about_you", {})
+        
+        # Define all fields
+        all_fields = [
+            {"name": "first_name", "label": "First Name", "type": "text", "required": True, "defaultValue": prefilled.get("first_name", "")},
+            {
+                "name": "middle_name",
+                "label": "Middle Name (Optional)",
+                "type": "text",
+                "required": False,
+                "defaultValue": prefilled.get("middle_name", "")
+            },
+            {"name": "surname", "label": "Surname", "type": "text", "required": True, "defaultValue": prefilled.get("surname", "")},
+            {
+                "name": "phone_number",
+                "label": "Phone Number",
+                "type": "tel",
+                "required": True,
+                "placeholder": "07XX XXX XXX",
+                "defaultValue": prefilled.get("phone_number", "")
+            },
+            {"name": "email", "label": "Email", "type": "email", "required": True, "defaultValue": prefilled.get("email", "")},
+        ]
+        
+        # Filter to show only missing or invalid fields
+        filtered_fields = filter_missing_fields(
+            all_fields=all_fields,
+            payload=payload,
+            collected_data=data,
+            validation_errors=errors,
+            data_key="about_you"
+        )
+        
+        # Add validation error hints to fields
+        fields_with_hints = add_validation_hints_to_fields(filtered_fields, errors)
+        
+        # Add frontend validation rules for real-time validation
+        fields_with_validation = add_frontend_validation_rules(fields_with_hints)
 
         return {
             "response": {
                 "type": "form",
-                "message": "👤 About you – Get your travel insurance quote in minutes",
-                "fields": [
-                    {"name": "first_name", "label": "First Name", "type": "text", "required": True},
-                    {
-                        "name": "middle_name",
-                        "label": "Middle Name (Optional)",
-                        "type": "text",
-                        "required": False,
-                    },
-                    {"name": "surname", "label": "Surname", "type": "text", "required": True},
-                    {
-                        "name": "phone_number",
-                        "label": "Phone Number",
-                        "type": "tel",
-                        "required": True,
-                        "placeholder": "07XX XXX XXX",
-                    },
-                    {"name": "email", "label": "Email", "type": "email", "required": True},
-                ],
+                "message": "👤 About you – Get your travel insurance quote in minutes" + (" - Please fix the errors below" if errors else ""),
+                "fields": fields_with_validation,
             },
             "next_step": 1,
             "collected_data": data,
