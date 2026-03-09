@@ -129,6 +129,18 @@ class PaymentAuditEvent(Base):
     transaction: Mapped["PaymentTransaction"] = relationship("PaymentTransaction", back_populates="audit_events")
 
 
+    class RAGMetric(Base):
+     __tablename__ = "rag_metrics"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    conversation_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("conversations.id"), nullable=True, index=True)
+    metric_type: Mapped[str] = mapped_column(String(50), nullable=False)  # e.g., retrieval_accuracy, confidence_score
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    conversation: Mapped[Optional["Conversation"]] = relationship("Conversation", back_populates="metrics")
+
+
 # ======================================================================
 # NEW: Application persistence tables (PA, Travel, Serenicare)
 # ======================================================================

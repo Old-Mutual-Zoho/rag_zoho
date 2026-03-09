@@ -1,56 +1,41 @@
-# src/metrics.py
 import time
-from src.database.db_connection import get_db_connection  # assumes you have a helper to connect to your DB
+import uuid
+from datetime import datetime
+from typing import Optional
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import insert
+from src.database.models import RAGMetric
 
-def record_retrieval_accuracy(score, query_id=None):
-    conn = get_db_connection()
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO rag_metrics (metric_type, value, query_id, timestamp)
-            VALUES (%s, %s, %s, NOW())
-            """,
-            ("retrieval_accuracy", score, query_id)
-        )
-    conn.commit()
-    conn.close()
 
-def record_confidence(conf, query_id=None):
-    conn = get_db_connection()
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO rag_metrics (metric_type, value, query_id, timestamp)
-            VALUES (%s, %s, %s, NOW())
-            """,
-            ("confidence_score", conf, query_id)
-        )
-    conn.commit()
-    conn.close()
+async def record_metric(
+    db: AsyncSession,
+    metric_type: str,
+    value: float,
+    conversation_id: Optional[str] = None,
+):
+    metric = RAGMetric(
+        id=str(uuid.uuid4()),
+        metric_type=metric_type,
+        value=value,
+        conversation_id=conversation_id,
+        created_at=datetime.utcnow(),
+    )
+    db.add(metric)
+    await db.commit()
 
-def record_latency(start_time, query_id=None):
+
+async def record_retrieval_accuracy(db: AsyncSession, score: float, conversation_id: Optional[str] = None):
+    await record_metric(db, "retrieval_accuracy", score, conversation_id)
+
+
+async def record_confidence(db: AsyncSession, conf: float, conversation_id: Optional[str] = None):
+    await record_metric(db, "confidence_score", conf, conversation_id)
+
+
+async def record_latency(db: AsyncSession, start_time: float, conversation_id: Optional[str] = None):
     latency = time.time() - start_time
-    conn = get_db_connection()
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO rag_metrics (metric_type, value, query_id, timestamp)
-            VALUES (%s, %s, %s, NOW())
-            """,
-            ("response_latency", latency, query_id)
-        )
-    conn.commit()
-    conn.close()
+    await record_metric(db, "response_latency", latency, conversation_id)
 
-def record_fallback(query_id=None):
-    conn = get_db_connection()
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO rag_metrics (metric_type, value, query_id, timestamp)
-            VALUES (%s, %s, %s, NOW())
-            """,
-            ("fallbacks", 1, query_id)
-        )
-    conn.commit()
-    conn.close()
+
+async def record_fallback(db: AsyncSession, conversation_id: Optional[str] = None):
+    await record_metric(db, "fallbacks", 1.0, conversation_id)

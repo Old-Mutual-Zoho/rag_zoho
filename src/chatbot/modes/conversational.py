@@ -5,6 +5,7 @@ Conversational mode - RAG-powered free-form chat
 from typing import Any, Dict, List, Optional
 import logging
 import re
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,44 @@ def _next_section_offer(action: str, *, is_digital: bool) -> tuple[str | None, s
     }
     return order.get(action, (None, None))
 
+# metrics functons
+
+async def _record_metric(db, metric_type: str, value: float, conversation_id: Optional[str] = None):
+    if db is None:
+        return
+    try:
+        import uuid
+        from datetime import datetime
+        from src.database.models import RAGMetric
+
+        metric = RAGMetric(
+            id=str(uuid.uuid4()),
+            metric_type=metric_type,
+            value=value,
+            conversation_id=conversation_id,
+            created_at=datetime.utcnow(),
+        )
+        db.add(metric)
+        await db.commit()
+    except Exception as exc:
+        logger.warning("[metrics] Failed to record %s: %s", metric_type, exc)
+
+
+async def _record_latency(db, start_time: float, conversation_id: Optional[str] = None):
+    await _record_metric(db, "response_latency", time.time() - start_time, conversation_id)
+
+
+async def _record_confidence(db, confidence: float, conversation_id: Optional[str] = None):
+    await _record_metric(db, "confidence_score", confidence, conversation_id)
+
+
+async def _record_retrieval_accuracy(db, sources_count: int, conversation_id: Optional[str] = None):
+    score = min(sources_count / 5.0, 1.0)
+    await _record_metric(db, "retrieval_accuracy", score, conversation_id)
+
+
+async def _record_fallback(db, conversation_id: Optional[str] = None):
+    await _record_metric(db, "fallbacks", 1.0, conversation_id)
 
 class ConversationalMode:
     def __init__(self, rag_system, product_matcher, state_manager):
@@ -147,9 +186,14 @@ class ConversationalMode:
         except Exception:
             # Fallback: no response processor available
             self.response_processor = None
-
-    async def process(self, message: str, session_id: str, user_id: str, form_data: Optional[Dict[str, Any]] = None) -> Dict:
+    async def process(self, message: str, session_id: str, user_id: str, form_data: Optional[Dict[str, Any]] = None, db=None) -> Dict:
         """Process message in conversational mode"""
+        start_time = time.time()
+
+        session_for_id = self.state_manager.get_session(session_id) or {}
+        conversation_id: Optional[str] = session_for_id.get("conversation_id") or session_id
+
+        # Backward-compatible: if the frontend still sends a product-guide action via form_data,
 
         # Backward-compatible: if the frontend still sends a product-guide action via form_data,
         # handle it, but we no longer *emit* buttons/actions as the primary UX.
@@ -237,6 +281,8 @@ class ConversationalMode:
                 else:
                     answer_text = self._build_no_retrieval_reply(no_ret_kind)
 
+                await _record_latency(db, start_time, conversation_id)
+                
                 return {
                     "mode": "conversational",
                     "response": answer_text,
@@ -293,6 +339,17 @@ class ConversationalMode:
 
         # Generate response
         response = await self.rag.generate(query=message, context_docs=retrieval_results, conversation_history=self._get_recent_history(session_id))
+        
+         # ---- Record RAG metrics ----
+        confidence = response.get("confidence", 0.5)
+        sources = response.get("sources", [])
+        await _record_confidence(db, confidence, conversation_id)
+        await _record_retrieval_accuracy(db, len(sources), conversation_id)
+        if not sources:
+            await _record_fallback(db, conversation_id)
+        # ---- End metrics ----
+
+
         # --- Escalation/handover logic ---
         session = self.state_manager.get_session(session_id) or {}
 
@@ -441,8 +498,9 @@ class ConversationalMode:
                 "products": [self._generate_product_card(p[2]) for p in products],
             }
 
-        # No product-guide buttons by default; users can reply in free text.
+       # No product-guide buttons by default; users can reply in free text.
 
+        await _record_latency(db, start_time, conversation_id)
         return {
             "mode": "conversational",
             "response": answer_text,
