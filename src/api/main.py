@@ -393,6 +393,28 @@ async def health_check():
     return {"status": "healthy", "database": {"postgres": "connected", "redis": redis_cache.ping()}, "timestamp": datetime.now().isoformat()}
 
 
+@api_router.get("/metrics/rag", tags=["Metrics"])
+async def get_rag_metrics(
+    limit: int = Query(50, ge=1, le=500),
+    conversation_id: Optional[str] = None,
+    db: PostgresDB = Depends(get_db),
+):
+    metrics = db.get_recent_rag_metrics(limit=limit, conversation_id=conversation_id)
+    return {
+        "count": len(metrics),
+        "metrics": [
+            {
+                "id": m.id,
+                "conversation_id": m.conversation_id,
+                "metric_type": m.metric_type,
+                "value": m.value,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in metrics
+        ],
+    }
+
+
 async def _handle_chat_message(request: ChatMessage, router: ChatRouter, db: PostgresDB) -> ChatResponse:
     """Shared logic for chat message. In conversational mode uses same RAG retrieval as run_rag (config top_k, synonyms, re-ranking)."""
     # Resolve external identifier (e.g. phone) to internal user UUID so session/conversation creation never hits FK violation

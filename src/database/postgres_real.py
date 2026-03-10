@@ -161,6 +161,18 @@ class PostgresDB:
                 s.refresh(metric)
         return created
 
+    def get_recent_rag_metrics(
+        self,
+        *,
+        limit: int = 50,
+        conversation_id: Optional[str] = None,
+    ) -> List[RAGMetric]:
+        with self._session() as s:
+            stmt = select(RAGMetric).order_by(RAGMetric.created_at.desc()).limit(limit)
+            if conversation_id:
+                stmt = stmt.where(RAGMetric.conversation_id == conversation_id)
+            return list(s.execute(stmt).scalars().all())
+
     def get_conversation_history(self, conversation_id: str, limit: int = 50) -> List[Message]:
         with self._session() as s:
             stmt = (

@@ -112,13 +112,15 @@ class SlackChatService:
                 if sender in {"history", "system"}:
                     continue
                 agent_id = self._extract_agent_id(text, msg.get("user"))
+                clean_text = self._clean_message(text, chat_id)
                 out.append(
                     {
                         "chat_id": chat_id,
                         "thread_ts": thread_ts,
                         "ts": msg.get("ts"),
-                        "text": text,
-                        "message": text,
+                        "text": clean_text,
+                        "message": clean_text,
+                        "raw_text": text,
                         "sender": sender,
                         "agent_id": agent_id,
                         "user": msg.get("user"),
@@ -131,8 +133,11 @@ class SlackChatService:
 
     @staticmethod
     def _extract_sender(text: str, user: str = None, bot_id: str = None) -> str:
-        if text.startswith("[") and "]" in text:
-            return text[1 : text.find("]")]
+        working = text or ""
+        if working.startswith("[agent_id:") and "]" in working:
+            working = working[working.find("]") + 1 :].lstrip()
+        if working.startswith("[") and "]" in working:
+            return working[1 : working.find("]")]
         # Human-typed thread replies in Slack usually have `user` and no `bot_id`.
         if user and not bot_id:
             return "agent"
@@ -151,6 +156,17 @@ class SlackChatService:
             if end > start:
                 return text[start:end].strip()
         return self.resolve_agent_id(user or "")
+
+    def _clean_message(self, text: str, chat_id: str) -> str:
+        cleaned = text or ""
+        if cleaned.startswith("[agent_id:") and "]" in cleaned:
+            cleaned = cleaned[cleaned.find("]") + 1 :].lstrip()
+        if cleaned.startswith("[") and "]" in cleaned:
+            cleaned = cleaned[cleaned.find("]") + 1 :].lstrip()
+        tag = self._chat_tag(chat_id)
+        if cleaned.startswith(tag):
+            cleaned = cleaned[len(tag) :].lstrip()
+        return cleaned
 
     @staticmethod
     def _extract_slack_error(exc: Exception) -> str:

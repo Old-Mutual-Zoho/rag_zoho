@@ -285,6 +285,17 @@ class PostgresDB:
             created.append(metric)
         return created
 
+    def get_recent_rag_metrics(
+        self,
+        *,
+        limit: int = 50,
+        conversation_id: Optional[str] = None,
+    ) -> List[RAGMetric]:
+        metrics = self._rag_metrics
+        if conversation_id:
+            metrics = [m for m in metrics if m.conversation_id == conversation_id]
+        return list(reversed(metrics))[:limit]
+
     # ------------------------------------------------------------------ #
     # Quotes
     # ------------------------------------------------------------------ #
