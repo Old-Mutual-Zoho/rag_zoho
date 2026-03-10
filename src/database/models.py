@@ -36,6 +36,7 @@ class Conversation(Base):
 
     user: Mapped["User"] = relationship("User", back_populates="conversations")
     messages: Mapped[list["Message"]] = relationship("Message", back_populates="conversation", order_by="Message.timestamp")
+    metrics: Mapped[list["RAGMetric"]] = relationship("RAGMetric", back_populates="conversation")
 
 
 class EscalationSession(Base):
@@ -128,9 +129,8 @@ class PaymentAuditEvent(Base):
 
     transaction: Mapped["PaymentTransaction"] = relationship("PaymentTransaction", back_populates="audit_events")
 
-
-    class RAGMetric(Base):
-     __tablename__ = "rag_metrics"
+class RAGMetric(Base):
+    __tablename__ = "rag_metrics"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     conversation_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("conversations.id"), nullable=True, index=True)

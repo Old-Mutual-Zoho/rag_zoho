@@ -41,6 +41,15 @@ class Message:
 
 
 @dataclass
+class RAGMetric:
+    id: str
+    metric_type: str
+    value: float
+    conversation_id: Optional[str]
+    created_at: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
 class Quote:
     id: str
     user_id: str
@@ -172,6 +181,8 @@ class PostgresDB:
         # Payment persistence
         self._payment_transactions: Dict[str, PaymentTransaction] = {}
         self._payment_audit_events: List[PaymentAuditEvent] = []
+        # RAG metrics
+        self._rag_metrics: List[RAGMetric] = []
 
     # ------------------------------------------------------------------ #
     # Schema / lifecycle
@@ -240,6 +251,39 @@ class PostgresDB:
         # Return newest first, API reverses again where needed
         msgs.sort(key=lambda m: m.timestamp, reverse=True)
         return msgs[:limit]
+
+    # ------------------------------------------------------------------ #
+    # RAG metrics
+    # ------------------------------------------------------------------ #
+    def add_rag_metric(
+        self,
+        *,
+        metric_type: str,
+        value: float,
+        conversation_id: Optional[str] = None,
+        created_at: Optional[datetime] = None,
+    ) -> RAGMetric:
+        metric = RAGMetric(
+            id=str(uuid.uuid4()),
+            metric_type=metric_type,
+            value=float(value),
+            conversation_id=conversation_id,
+            created_at=created_at or datetime.utcnow(),
+        )
+        self._rag_metrics.append(metric)
+        return metric
+
+    def add_rag_metrics(self, metrics: List[Dict[str, Any]]) -> List[RAGMetric]:
+        created: List[RAGMetric] = []
+        for metric_data in metrics:
+            metric = self.add_rag_metric(
+                metric_type=metric_data["metric_type"],
+                value=metric_data["value"],
+                conversation_id=metric_data.get("conversation_id"),
+                created_at=metric_data.get("created_at"),
+            )
+            created.append(metric)
+        return created
 
     # ------------------------------------------------------------------ #
     # Quotes

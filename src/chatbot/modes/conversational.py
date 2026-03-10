@@ -125,44 +125,35 @@ def _next_section_offer(action: str, *, is_digital: bool) -> tuple[str | None, s
     }
     return order.get(action, (None, None))
 
-# metrics functons
-
-async def _record_metric(db, metric_type: str, value: float, conversation_id: Optional[str] = None):
+# metrics functions
+def _emit_metrics(db, metrics: list[Dict[str, Any]]) -> None:
     if db is None:
         return
+    if not metrics:
+        return
     try:
-        import uuid
         from datetime import datetime
-        from src.database.models import RAGMetric
-
-        metric = RAGMetric(
-            id=str(uuid.uuid4()),
-            metric_type=metric_type,
-            value=value,
-            conversation_id=conversation_id,
-            created_at=datetime.utcnow(),
-        )
-        db.add(metric)
-        await db.commit()
+        if hasattr(db, "add_rag_metrics"):
+            now = datetime.utcnow()
+            for metric in metrics:
+                metric.setdefault("created_at", now)
+            db.add_rag_metrics(metrics)
+        elif hasattr(db, "add_rag_metric"):
+            now = datetime.utcnow()
+            for metric in metrics:
+                metric.setdefault("created_at", now)
+                db.add_rag_metric(**metric)
+        else:
+            logger.warning("[metrics] DB adapter missing add_rag_metrics; count=%s", len(metrics))
     except Exception as exc:
-        logger.warning("[metrics] Failed to record %s: %s", metric_type, exc)
+        logger.warning("[metrics] Failed to record metrics: %s", exc)
 
-
-async def _record_latency(db, start_time: float, conversation_id: Optional[str] = None):
-    await _record_metric(db, "response_latency", time.time() - start_time, conversation_id)
-
-
-async def _record_confidence(db, confidence: float, conversation_id: Optional[str] = None):
-    await _record_metric(db, "confidence_score", confidence, conversation_id)
-
-
-async def _record_retrieval_accuracy(db, sources_count: int, conversation_id: Optional[str] = None):
-    score = min(sources_count / 5.0, 1.0)
-    await _record_metric(db, "retrieval_accuracy", score, conversation_id)
-
-
-async def _record_fallback(db, conversation_id: Optional[str] = None):
-    await _record_metric(db, "fallbacks", 1.0, conversation_id)
+def _metric_payload(metric_type: str, value: float, conversation_id: Optional[str]) -> Dict[str, Any]:
+    return {
+        "metric_type": metric_type,
+        "value": float(value),
+        "conversation_id": conversation_id,
+    }
 
 class ConversationalMode:
     def __init__(self, rag_system, product_matcher, state_manager):
@@ -281,8 +272,17 @@ class ConversationalMode:
                 else:
                     answer_text = self._build_no_retrieval_reply(no_ret_kind)
 
-                await _record_latency(db, start_time, conversation_id)
-                
+                _emit_metrics(
+                    db,
+                    [
+                        _metric_payload(
+                            "response_latency",
+                            time.time() - start_time,
+                            conversation_id,
+                        )
+                    ],
+                )
+
                 return {
                     "mode": "conversational",
                     "response": answer_text,
@@ -340,13 +340,15 @@ class ConversationalMode:
         # Generate response
         response = await self.rag.generate(query=message, context_docs=retrieval_results, conversation_history=self._get_recent_history(session_id))
         
-         # ---- Record RAG metrics ----
+        # ---- Record RAG metrics ----
         confidence = response.get("confidence", 0.5)
         sources = response.get("sources", [])
-        await _record_confidence(db, confidence, conversation_id)
-        await _record_retrieval_accuracy(db, len(sources), conversation_id)
+        metrics_to_emit = [
+            _metric_payload("confidence_score", confidence, conversation_id),
+            _metric_payload("retrieval_accuracy", min(len(sources) / 5.0, 1.0), conversation_id),
+        ]
         if not sources:
-            await _record_fallback(db, conversation_id)
+            metrics_to_emit.append(_metric_payload("fallbacks", 1.0, conversation_id))
         # ---- End metrics ----
 
 
@@ -498,9 +500,12 @@ class ConversationalMode:
                 "products": [self._generate_product_card(p[2]) for p in products],
             }
 
-       # No product-guide buttons by default; users can reply in free text.
+        # No product-guide buttons by default; users can reply in free text.
 
-        await _record_latency(db, start_time, conversation_id)
+        metrics_to_emit.append(
+            _metric_payload("response_latency", time.time() - start_time, conversation_id)
+        )
+        _emit_metrics(db, metrics_to_emit)
         return {
             "mode": "conversational",
             "response": answer_text,

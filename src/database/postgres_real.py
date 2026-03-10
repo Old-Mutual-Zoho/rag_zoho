@@ -22,6 +22,7 @@ from src.database.models import (
     PaymentAuditEvent,
     PaymentTransaction,
     Quote,
+    RAGMetric,
     User,
     PersonalAccidentApplication,
     TravelInsuranceApplication,
@@ -120,6 +121,45 @@ class PostgresDB:
             s.flush()
             s.refresh(m)
             return m
+
+    def add_rag_metric(
+        self,
+        *,
+        metric_type: str,
+        value: float,
+        conversation_id: Optional[str] = None,
+        created_at: Optional[datetime] = None,
+    ) -> RAGMetric:
+        with self._session() as s:
+            metric = RAGMetric(
+                id=str(uuid4()),
+                metric_type=metric_type,
+                value=value,
+                conversation_id=conversation_id,
+                created_at=created_at or datetime.utcnow(),
+            )
+            s.add(metric)
+            s.flush()
+            s.refresh(metric)
+            return metric
+
+    def add_rag_metrics(self, metrics: List[Dict[str, Any]]) -> List[RAGMetric]:
+        created: List[RAGMetric] = []
+        with self._session() as s:
+            for metric_data in metrics:
+                metric = RAGMetric(
+                    id=str(uuid4()),
+                    metric_type=metric_data["metric_type"],
+                    value=float(metric_data["value"]),
+                    conversation_id=metric_data.get("conversation_id"),
+                    created_at=metric_data.get("created_at") or datetime.utcnow(),
+                )
+                s.add(metric)
+                created.append(metric)
+            s.flush()
+            for metric in created:
+                s.refresh(metric)
+        return created
 
     def get_conversation_history(self, conversation_id: str, limit: int = 50) -> List[Message]:
         with self._session() as s:
