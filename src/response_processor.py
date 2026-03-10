@@ -73,6 +73,7 @@ class ResponseProcessor:
         conversation_state: Dict[str, Any],
         *,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         products_matched: Optional[list] = None,
     ) -> Dict[str, Any]:
         """Return a normalized dict with keys: message, follow_up (optional), fallback (optional), metadata.
@@ -90,7 +91,13 @@ class ResponseProcessor:
             # Detect errors or model failure signatures
             if not message or message.lower().startswith("error"):
                 logger.warning("Empty or error-like model response detected")
-                payload = self.fallback_handler.generate_fallback(user_input, reason="empty_or_error", conversation_state=conversation_state)
+                payload = self.fallback_handler.generate_fallback(
+                    user_input,
+                    reason="empty_or_error",
+                    conversation_state=conversation_state,
+                    session_id=session_id,
+                    user_id=user_id,
+                )
                 # Persist fallback into session store if available
                 if self.state_manager and session_id:
                     self.state_manager.update_session(session_id, {"fallbacks": conversation_state.get("fallbacks", [])})
@@ -123,7 +130,13 @@ class ResponseProcessor:
             # Low confidence => fallback
             if confidence is not None and confidence < self.confidence_threshold:
                 logger.info("Low confidence (%.2f) - triggering fallback", confidence)
-                payload = self.fallback_handler.generate_fallback(user_input, confidence=confidence, conversation_state=conversation_state)
+                payload = self.fallback_handler.generate_fallback(
+                    user_input,
+                    confidence=confidence,
+                    conversation_state=conversation_state,
+                    session_id=session_id,
+                    user_id=user_id,
+                )
                 if self.state_manager and session_id:
                     self.state_manager.update_session(session_id, {"fallbacks": conversation_state.get("fallbacks", [])})
                 return payload

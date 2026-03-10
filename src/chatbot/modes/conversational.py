@@ -372,6 +372,8 @@ class ConversationalMode:
                 confidence=response.get("confidence", 0.0),
                 conversation_state=session,
                 session_id=session_id,
+                # When confidence is low, ResponseProcessor escalates if session_id is provided.
+                user_id=user_id,
                 products_matched=products_matched_names,
             )
             answer_text = processed.get("message")
