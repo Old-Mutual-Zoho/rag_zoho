@@ -260,13 +260,13 @@ class TravelInsuranceFlow:
         user_id: str,
     ) -> Dict[str, Any]:
         errors: Dict[str, str] = {}
-        
+
         if payload and "_raw" not in payload:
             require_str(payload, "first_name", errors, label="First Name")
             require_str(payload, "surname", errors, label="Surname")
             validate_phone_ug(payload.get("phone_number", ""), errors, field="phone_number")
             validate_email(payload.get("email", ""), errors, field="email")
-            
+
             # If no errors, save and proceed
             if not errors:
                 data["about_you"] = {
@@ -280,13 +280,13 @@ class TravelInsuranceFlow:
                 app_id = data.get("application_id")
                 if self.controller and app_id:
                     self.controller.update_about_you(app_id, payload)
-                
+
                 # Proceed to next step
                 return await self._step_travel_party_and_trip({}, data, user_id)
 
         # Pre-fill from existing data
         prefilled = data.get("about_you", {})
-        
+
         # Define all fields
         all_fields = [
             {"name": "first_name", "label": "First Name", "type": "text", "required": True, "defaultValue": prefilled.get("first_name", "")},
@@ -308,7 +308,7 @@ class TravelInsuranceFlow:
             },
             {"name": "email", "label": "Email", "type": "email", "required": True, "defaultValue": prefilled.get("email", "")},
         ]
-        
+
         # Filter to show only missing or invalid fields
         filtered_fields = filter_missing_fields(
             all_fields=all_fields,
@@ -317,10 +317,10 @@ class TravelInsuranceFlow:
             validation_errors=errors,
             data_key="about_you"
         )
-        
+
         # Add validation error hints to fields
         fields_with_hints = add_validation_hints_to_fields(filtered_fields, errors)
-        
+
         # Add frontend validation rules for real-time validation
         fields_with_validation = add_frontend_validation_rules(fields_with_hints)
 

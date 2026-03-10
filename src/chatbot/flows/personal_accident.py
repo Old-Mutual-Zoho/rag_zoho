@@ -21,8 +21,8 @@ from src.chatbot.validation import (
     validate_phone_ug,
 )
 from src.chatbot.flows.field_filter import (
-    filter_missing_fields, 
-    add_validation_hints_to_fields, 
+    filter_missing_fields,
+    add_validation_hints_to_fields,
     add_frontend_validation_rules,
     filter_already_collected_fields
 )
@@ -209,7 +209,7 @@ class PersonalAccidentFlow:
         Calculate premium immediately and store in Postgres.
         """
         errors: Dict[str, str] = {}
-        
+
         if payload and "_raw" not in payload:
             # Frontend-style field names
             first_name = require_str(payload, "firstName", errors, label="First Name")
@@ -289,29 +289,87 @@ class PersonalAccidentFlow:
                 }
 
                 data["quote_id"] = str(quote.id)
-                
+
                 # Proceed to premium summary
                 return await self._step_premium_summary({}, data, user_id)
 
         # Pre-fill from existing data
         prefilled = data.get("quick_quote", {})
-        
+
         # Define all fields
         all_fields = [
-            {"name": "firstName", "label": "First Name", "type": "text", "required": True, "minLength": 2, "maxLength": 50, "defaultValue": prefilled.get("first_name", "")},
-            {"name": "lastName", "label": "Last Name", "type": "text", "required": True, "minLength": 2, "maxLength": 50, "defaultValue": prefilled.get("last_name", "")},
-            {"name": "middleName", "label": "Middle Name", "type": "text", "required": False, "maxLength": 50, "defaultValue": prefilled.get("middle_name", "")},
-            {"name": "mobile", "label": "Mobile Number", "type": "tel", "required": True, "placeholder": "07XX XXX XXX or +2567XX XXX XXX", "defaultValue": prefilled.get("mobile", "")},
-            {"name": "email", "label": "Email Address", "type": "email", "required": True, "maxLength": 100, "defaultValue": prefilled.get("email", "")},
-            {"name": "dob", "label": "Date of Birth", "type": "date", "required": True, "help": "Must be 18-65 years old", "defaultValue": prefilled.get("dob", "")},
-            {"name": "policyStartDate", "label": "Policy Start Date", "type": "date", "required": True, "help": "Must be after today", "defaultValue": prefilled.get("policy_start_date", "")},
-            {"name": "coverLimitAmountUgx", "label": "Cover Limit", "type": "select", "required": True, "defaultValue": str(prefilled.get("cover_limit_ugx", "")), "options": [
-                {"value": "5000000", "label": "UGX 5,000,000"},
-                {"value": "10000000", "label": "UGX 10,000,000"},
-                {"value": "20000000", "label": "UGX 20,000,000"},
-            ]},
+            {
+                "name": "firstName",
+                "label": "First Name",
+                "type": "text",
+                "required": True,
+                "minLength": 2,
+                "maxLength": 50,
+                "defaultValue": prefilled.get("first_name", ""),
+            },
+            {
+                "name": "lastName",
+                "label": "Last Name",
+                "type": "text",
+                "required": True,
+                "minLength": 2,
+                "maxLength": 50,
+                "defaultValue": prefilled.get("last_name", ""),
+            },
+            {
+                "name": "middleName",
+                "label": "Middle Name",
+                "type": "text",
+                "required": False,
+                "maxLength": 50,
+                "defaultValue": prefilled.get("middle_name", ""),
+            },
+            {
+                "name": "mobile",
+                "label": "Mobile Number",
+                "type": "tel",
+                "required": True,
+                "placeholder": "07XX XXX XXX or +2567XX XXX XXX",
+                "defaultValue": prefilled.get("mobile", ""),
+            },
+            {
+                "name": "email",
+                "label": "Email Address",
+                "type": "email",
+                "required": True,
+                "maxLength": 100,
+                "defaultValue": prefilled.get("email", ""),
+            },
+            {
+                "name": "dob",
+                "label": "Date of Birth",
+                "type": "date",
+                "required": True,
+                "help": "Must be 18-65 years old",
+                "defaultValue": prefilled.get("dob", ""),
+            },
+            {
+                "name": "policyStartDate",
+                "label": "Policy Start Date",
+                "type": "date",
+                "required": True,
+                "help": "Must be after today",
+                "defaultValue": prefilled.get("policy_start_date", ""),
+            },
+            {
+                "name": "coverLimitAmountUgx",
+                "label": "Cover Limit",
+                "type": "select",
+                "required": True,
+                "defaultValue": str(prefilled.get("cover_limit_ugx", "")),
+                "options": [
+                    {"value": "5000000", "label": "UGX 5,000,000"},
+                    {"value": "10000000", "label": "UGX 10,000,000"},
+                    {"value": "20000000", "label": "UGX 20,000,000"},
+                ],
+            },
         ]
-        
+
         # Filter to show only missing or invalid fields
         filtered_fields = filter_missing_fields(
             all_fields=all_fields,
@@ -320,10 +378,10 @@ class PersonalAccidentFlow:
             validation_errors=errors,
             data_key="quick_quote"
         )
-        
+
         # Add validation error hints to fields
         fields_with_hints = add_validation_hints_to_fields(filtered_fields, errors)
-        
+
         # Add frontend validation rules for real-time validation
         fields_with_validation = add_frontend_validation_rules(fields_with_hints)
 
@@ -425,11 +483,11 @@ class PersonalAccidentFlow:
         """
         errors: Dict[str, str] = {}
         quick_quote = data.get("quick_quote", {})
-        
+
         if payload and "_raw" not in payload:
             # Auto-use data from quick quote for fields already collected in Step 0
             # Only validate NEW fields that are being collected in this step
-            
+
             surname = payload.get("surname") or quick_quote.get("last_name", "")
             if not surname:
                 errors["surname"] = "Surname is required"
@@ -440,7 +498,7 @@ class PersonalAccidentFlow:
 
             # Middle name - auto-use from quick quote if not in payload
             middle_name = payload.get("middle_name") or quick_quote.get("middle_name", "")
-            
+
             # Email - auto-use from quick quote if not in payload
             email = payload.get("email") or quick_quote.get("email", "")
             if email:
@@ -581,7 +639,7 @@ class PersonalAccidentFlow:
                 "defaultValue": prefilled_personal.get("physical_address", ""),
             },
         ]
-        
+
         # Progressive disclosure: If first visit, show only NEW fields (not already collected in quick_quote)
         # If re-submission with errors, show only missing fields
         if not payload or "_raw" in payload:
@@ -600,10 +658,10 @@ class PersonalAccidentFlow:
                 validation_errors=errors,
                 data_key="personal_details"
             )
-        
+
         # Add validation error hints to fields
         fields_with_hints = add_validation_hints_to_fields(filtered_fields, errors)
-        
+
         # Add frontend validation rules for real-time validation
         fields_with_validation = add_frontend_validation_rules(fields_with_hints)
 
@@ -623,7 +681,7 @@ class PersonalAccidentFlow:
         Collect beneficiary details. Pre-fill name from quick quote if available.
         """
         errors: Dict[str, str] = {}
-        
+
         if payload and "_raw" not in payload:
             first_name = require_str(payload, "nok_first_name", errors, label="First Name")
             last_name = require_str(payload, "nok_last_name", errors, label="Last Name")
@@ -636,7 +694,7 @@ class PersonalAccidentFlow:
             id_number = optional_str(payload, "nok_id_number")
             if id_number:
                 validate_nin_ug(id_number, errors, field="nok_id_number")
-            
+
             # If no errors, save and proceed
             if not errors:
                 data["next_of_kin"] = {
@@ -667,7 +725,7 @@ class PersonalAccidentFlow:
             {"name": "nok_address", "label": "Address", "type": "text", "required": True, "defaultValue": prefilled_nok.get("nok_address", "")},
             {"name": "nok_id_number", "label": "ID Number", "type": "text", "required": False, "defaultValue": prefilled_nok.get("nok_id_number", "")},
         ]
-        
+
         # Filter to show only missing or invalid fields
         filtered_fields = filter_missing_fields(
             all_fields=all_fields,
@@ -676,10 +734,10 @@ class PersonalAccidentFlow:
             validation_errors=errors,
             data_key="next_of_kin"
         )
-        
+
         # Add validation error hints to fields
         fields_with_hints = add_validation_hints_to_fields(filtered_fields, errors)
-        
+
         # Add frontend validation rules for real-time validation
         fields_with_validation = add_frontend_validation_rules(fields_with_hints)
 

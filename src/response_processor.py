@@ -177,40 +177,40 @@ class ResponseProcessor:
         """
         if not user_input or not user_input.strip():
             return True
-        
+
         stripped = user_input.strip()
         tokens = stripped.split()
         lowered = stripped.lower()
-        
+
         # Single character or very short gibberish (less than 2 chars)
         if len(stripped) <= 2:
             return True
-        
+
         # If single word is a known valid insurance term, it's complete
         if len(tokens) == 1 and lowered in cls.VALID_SINGLE_WORDS:
             logger.debug("Single word '%s' is a valid insurance term", stripped)
             return False
-        
+
         # Common valid 2-word queries
         if len(tokens) == 2:
             if any(phrase in lowered for phrase in cls.VALID_TWO_WORD_PHRASES):
                 logger.debug("Two-word query '%s' matches valid phrase pattern", stripped)
                 return False
-        
+
         # If query has 3+ words, it's probably complete enough
         if len(tokens) >= 3:
             return False
-        
+
         # Check if it contains common insurance keywords even if short
         if cls._contains_insurance_keywords(lowered):
             logger.debug("Query '%s' contains insurance keywords", stripped)
             return False
-        
+
         # At this point: 1-2 word query that doesn't match known patterns
         # Could be incomplete
         logger.debug("Query '%s' appears incomplete (short and no known patterns)", stripped)
         return True
-    
+
     @staticmethod
     def _contains_insurance_keywords(text: str) -> bool:
         """Check if text contains common insurance-related keywords."""
