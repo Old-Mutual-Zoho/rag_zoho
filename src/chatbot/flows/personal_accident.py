@@ -739,6 +739,17 @@ class PersonalAccidentFlow:
                 validation_errors=errors,
                 data_key="next_of_kin"
             )
+
+        # Add validation error hints to fields
+        fields_with_hints = add_validation_hints_to_fields(filtered_fields, errors)
+
+        # Add frontend validation rules for real-time validation
+        fields_with_validation = add_frontend_validation_rules(fields_with_hints)
+
+        return {
+            "response": {
+                "type": "form",
+                "message": "👥 Next of kin details" + (" - Please fix the errors below" if errors else ""),
                 "fields": fields_with_validation,
             },
             "next_step": 4,
