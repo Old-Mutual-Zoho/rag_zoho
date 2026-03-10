@@ -640,13 +640,13 @@ class PersonalAccidentFlow:
             # If no errors, save and proceed
             if not errors:
                 data["next_of_kin"] = {
-                    "first_name": first_name,
-                    "last_name": last_name,
-                    "middle_name": middle_name,
-                    "phone_number": phone_number,
-                    "relationship": relationship,
-                    "address": address,
-                    "id_number": id_number,
+                    "nok_first_name": first_name,
+                    "nok_last_name": last_name,
+                    "nok_middle_name": middle_name,
+                    "nok_phone_number": phone_number,
+                    "nok_relationship": relationship,
+                    "nok_address": address,
+                    "nok_id_number": id_number,
                 }
                 # Proceed to next step
                 return await self._step_previous_pa_policy({}, data, user_id)
@@ -654,18 +654,18 @@ class PersonalAccidentFlow:
         # Pre-fill from quick quote if available
         quick_quote = data.get("quick_quote", {})
         prefilled_nok = data.get("next_of_kin", {})
-        autofill_first = prefilled_nok.get("first_name", quick_quote.get("first_name", ""))
-        autofill_last = prefilled_nok.get("last_name", quick_quote.get("last_name", ""))
+        autofill_first = prefilled_nok.get("nok_first_name", quick_quote.get("first_name", ""))
+        autofill_last = prefilled_nok.get("nok_last_name", quick_quote.get("last_name", ""))
 
         # Define all fields
         all_fields = [
             {"name": "nok_first_name", "label": "First Name", "type": "text", "required": True, "defaultValue": autofill_first},
             {"name": "nok_last_name", "label": "Last Name", "type": "text", "required": True, "defaultValue": autofill_last},
-            {"name": "nok_middle_name", "label": "Middle Name", "type": "text", "required": False, "defaultValue": prefilled_nok.get("middle_name", "")},
-            {"name": "nok_phone_number", "label": "Phone Number", "type": "tel", "required": True, "defaultValue": prefilled_nok.get("phone_number", "")},
-            {"name": "nok_relationship", "label": "Relationship", "type": "text", "required": True, "defaultValue": prefilled_nok.get("relationship", "")},
-            {"name": "nok_address", "label": "Address", "type": "text", "required": True, "defaultValue": prefilled_nok.get("address", "")},
-            {"name": "nok_id_number", "label": "ID Number", "type": "text", "required": False, "defaultValue": prefilled_nok.get("id_number", "")},
+            {"name": "nok_middle_name", "label": "Middle Name", "type": "text", "required": False, "defaultValue": prefilled_nok.get("nok_middle_name", "")},
+            {"name": "nok_phone_number", "label": "Phone Number", "type": "tel", "required": True, "defaultValue": prefilled_nok.get("nok_phone_number", "")},
+            {"name": "nok_relationship", "label": "Relationship", "type": "text", "required": True, "defaultValue": prefilled_nok.get("nok_relationship", "")},
+            {"name": "nok_address", "label": "Address", "type": "text", "required": True, "defaultValue": prefilled_nok.get("nok_address", "")},
+            {"name": "nok_id_number", "label": "ID Number", "type": "text", "required": False, "defaultValue": prefilled_nok.get("nok_id_number", "")},
         ]
         
         # Filter to show only missing or invalid fields
@@ -811,9 +811,9 @@ class PersonalAccidentFlow:
                 "Date of Birth": quick_quote.get("dob"),
             },
             "Next of Kin": {
-                "Name": f"{data.get('next_of_kin', {}).get('first_name')} {data.get('next_of_kin', {}).get('last_name')}",
-                "Relationship": data.get('next_of_kin', {}).get('relationship'),
-                "Phone": data.get('next_of_kin', {}).get('phone_number'),
+                "Name": f"{data.get('next_of_kin', {}).get('nok_first_name')} {data.get('next_of_kin', {}).get('nok_last_name')}",
+                "Relationship": data.get('next_of_kin', {}).get('nok_relationship'),
+                "Phone": data.get('next_of_kin', {}).get('nok_phone_number'),
             },
             "Coverage": {
                 "Cover Limit": f"UGX {cover_limit:,}",
