@@ -1341,14 +1341,6 @@ async def end_session(session_id: str):
 # API versioning: expose routes under /api/v1
 app.include_router(api_router, prefix="/api/v1")
 
-# Register applications router
-try:
-    from src.api.applications_router import api as applications_api
-
-    app.include_router(applications_api, prefix="/api")
-except Exception:
-    pass
-
 # Register Personal Accident quote forms router
 try:
     from src.api.pa_quote_forms_router import api as pa_quote_api
