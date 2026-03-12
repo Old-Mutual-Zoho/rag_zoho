@@ -58,14 +58,7 @@ _assessments_store: Dict[str, Dict[str, Any]] = {}
 _pdf_store: Dict[str, bytes] = {}
 
 
-def _should_use_real_integrations() -> bool:
-    """Check if real integrations should be used."""
-    mode = os.getenv("INTEGRATIONS_MODE", "").strip().lower()
-    if mode in {"real", "live"}:
-        return True
-    if mode in {"mock", "test"}:
-        return False
-    return bool(os.getenv("PARTNER_UNDERWRITING_API_URL"))
+from src.integrations.config import should_use_real_integrations as _should_use_real_integrations
 
 
 def _get_trace_id(x_trace_id: Optional[str] = Header(None)) -> str:
