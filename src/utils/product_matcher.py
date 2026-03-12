@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional
 
@@ -123,8 +124,20 @@ class ProductMatcher:
 
         # Tokenize and drop generic words so we don't match everything on
         # "insurance", "cover", etc.
+        def _normalize_token(token: str) -> str:
+            t = (token or "").lower().strip()
+            # Lightweight singularization to tolerate variants like risk/risks, policy/policies.
+            if len(t) > 4 and t.endswith("ies"):
+                return t[:-3] + "y"
+            if len(t) > 3 and t.endswith("s") and not t.endswith("ss"):
+                return t[:-1]
+            return t
+
         def _tokens(s: str) -> List[str]:
             return re.findall(r"\b[\w']+\b", (s or "").lower())
+
+        def _normalized_tokens(s: str) -> set[str]:
+            return {_normalize_token(t) for t in _tokens(s)}
 
         stop = {
             "insurance",
@@ -172,7 +185,7 @@ class ProductMatcher:
         except Exception:
             pass
 
-        q_set = set([t for t in _tokens(q_text) if t not in stop])
+        q_set = {t for t in _normalized_tokens(q_text) if t not in stop}
         if not q_set:
             # If query is entirely generic (e.g. "insurance"), don't force matches.
             return []
@@ -185,8 +198,8 @@ class ProductMatcher:
             cat = (product.get("category_name") or "").lower()
             sub = (product.get("sub_category_name") or "").lower()
 
-            name_tokens = set(_tokens(name))
-            meta_tokens = set(_tokens(" ".join([slug, cat, sub])))
+            name_tokens = _normalized_tokens(name)
+            meta_tokens = _normalized_tokens(" ".join([slug, cat, sub]))
 
             overlap_name = len(q_set & name_tokens)
             overlap_meta = len(q_set & meta_tokens)
@@ -206,6 +219,14 @@ class ProductMatcher:
             # Soft phrase match (handles e.g. "personal accident" appearing in longer query)
             if overlap_name >= 2:
                 score += 0.5
+
+            # Near-phrase fuzzy boost for minor wording differences/typos.
+            if name:
+                similarity = SequenceMatcher(None, q_text.lower(), name).ratio()
+                if similarity >= 0.84:
+                    score += 1.0
+                elif similarity >= 0.74:
+                    score += 0.4
 
             if score > 0.0:
                 scored.append((score, 0, product))

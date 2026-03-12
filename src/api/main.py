@@ -146,7 +146,13 @@ class APIRAGAdapter:
         k = self.cfg.retrieval.top_k if top_k is None else top_k
         return retrieve_context(question=query, cfg=self.cfg, top_k=k, filters=filters)
 
-    async def generate(self, query: str, context_docs: List[Dict], conversation_history: List[Dict]):
+    async def generate(
+        self,
+        query: str,
+        context_docs: List[Dict],
+        conversation_history: List[Dict],
+        original_question: Optional[str] = None,
+    ):
         """
         Use the configured generation backend (Gemini by default) to
         produce an answer grounded in the retrieved context.
@@ -268,22 +274,24 @@ class APIRAGAdapter:
 
         stats = _retrieval_stats()
         # If retrieval is weak or empty, avoid LLM and fall back to extractive mode.
-        if not context_docs or stats["avg_score"] < 0.55:
+        # Keep a low threshold so generation still runs when chunks are reasonably relevant.
+        if not context_docs or stats["avg_score"] < 0.2:
             return _extractive_answer()
 
         if self.cfg.generation.backend == "gemini":
             # Use the new async Gemini generator (MiaGenerator). If the model call
             # fails or returns our generic phone number fallback, degrade to a
             # context-only extractive answer instead of surfacing the error text.
-            mia = MiaGenerator()
             try:
-                answer = await mia.generate(query, context_docs, conversation_history)
+                mia = MiaGenerator()
+                question_for_generation = (original_question or query or "").strip() or query
+                answer = await mia.generate(question_for_generation, context_docs, conversation_history)
             except Exception as e:  # pragma: no cover - defensive; MiaGenerator already logs
-                logger.error("MiaGenerator.generate raised unexpectedly: %s", e, exc_info=True)
+                logger.error("Gemini generation unavailable, falling back to extractive answer: %s", e, exc_info=True)
                 return _extractive_answer()
 
-            fallback_phrase = "I'm having trouble retrieving those details. Please call 0800-100-900 for immediate help."
-            if not answer or fallback_phrase in answer:
+            lowered_answer = (answer or "").strip().lower()
+            if (not lowered_answer) or ("i'm having trouble retrieving those details" in lowered_answer):
                 # LLM unavailable / failed -> use extractive context instead.
                 return _extractive_answer()
 

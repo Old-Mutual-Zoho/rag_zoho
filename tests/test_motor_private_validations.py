@@ -352,3 +352,39 @@ async def test_guided_premium_preview_uses_vehicle_details_state(motor_flow, mon
     assert captured["underwriting_data"]["vehicleMake"] == "Toyota"
     assert captured["underwriting_data"]["policyStartDate"] == (date.today() + timedelta(days=2)).isoformat()
     assert result["response"]["payable_amount"] == 12345
+
+
+def test_load_benefits_populates_data(motor_flow):
+    """_load_benefits() should silently populate data['benefits'] without a UI step."""
+
+    data = {}
+    motor_flow._load_benefits(data)
+    assert "benefits" in data
+    assert isinstance(data["benefits"], list)
+
+
+@pytest.mark.asyncio
+async def test_additional_benefits_goes_directly_to_premium_summary(motor_flow):
+    """After selecting additional benefits the flow must go straight to the quote (step 4)."""
+
+    result = await motor_flow._step_additional_benefits(
+        {"risky_activities": ["political_violence"]},
+        {
+            "vehicle_details": {
+                "vehicle_make": "Toyota",
+                "year_of_manufacture": str(date.today().year),
+                "cover_start_date": (date.today() + timedelta(days=1)).isoformat(),
+                "rare_model": "No",
+                "valuation_done": "Yes",
+                "vehicle_value": "20000000",
+            }
+        },
+        user_id="user123",
+    )
+
+    assert result["next_step"] == 4
+    assert result["response"]["type"] == "premium_summary"
+    # Benefits must NOT appear as a UI field in the quote screen
+    assert "benefits" not in result["response"]
+    # But they should be silently saved in collected data
+    assert "benefits" in result["collected_data"]

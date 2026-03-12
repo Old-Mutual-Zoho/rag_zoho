@@ -150,11 +150,7 @@ async def test_personal_details_render_stays_on_current_step_and_has_gender_opti
     assert result["next_step"] == 2
     gender_field = next(field for field in result["response"]["fields"] if field["name"] == "gender")
     assert gender_field["type"] == "select"
-    assert gender_field["options"] == [
-        {"value": "Male", "label": "Male"},
-        {"value": "Female", "label": "Female"},
-        {"value": "Other", "label": "Other"},
-    ]
+    assert gender_field["options"] == ["Male", "Female", "Other"]
 
 
 @pytest.mark.asyncio

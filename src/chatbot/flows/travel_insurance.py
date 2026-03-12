@@ -208,7 +208,7 @@ class TravelInsuranceFlow:
                 "products": [
                     {
                         "id": p["id"],
-                        "label": p["label"],
+                           "label": p.get("label", p.get("id", "")),
                         "description": p["description"],
                         "action": "select_cover",
                         "selected": p["id"] == data.get("selected_product", {}).get("id"),
@@ -341,6 +341,11 @@ class TravelInsuranceFlow:
         data: Dict[str, Any],
         user_id: str,
     ) -> Dict[str, Any]:
+        existing_trip = data.get("travel_party_and_trip") or {}
+        selected_party = str(
+            payload.get("travel_party") or existing_trip.get("travel_party") or "myself_only"
+        ).strip()
+
         travel_fields = {
             "travel_party",
             "total_travellers",
@@ -358,11 +363,29 @@ class TravelInsuranceFlow:
         }
         has_travel_submission = any(field in payload for field in travel_fields)
 
+        # Frontends may submit only `travel_party` first to reveal relevant DOB/count fields.
+        # Treat that as a progressive render update instead of a full validation submission.
+        if payload and "_raw" not in payload:
+            payload_keys = set(payload.keys())
+            if payload_keys == {"travel_party"}:
+                existing_trip["travel_party"] = selected_party
+                data["travel_party_and_trip"] = existing_trip
+                return {
+                    "response": {
+                        "type": "form",
+                        "message": "✈️ Travel details",
+                        "fields": self._travel_party_fields(selected_party, existing_trip),
+                        "info": "A change in number of travellers will result in a premium adjustment.",
+                    },
+                    "next_step": 3,
+                    "collected_data": data,
+                }
+
         if payload and "_raw" not in payload and has_travel_submission:
             errors: Dict[str, str] = {}
 
             travel_party = validate_in(
-                payload.get("travel_party", ""),
+                payload.get("travel_party", existing_trip.get("travel_party", "")),
                 ("myself_only", "myself_and_someone_else", "group"),
                 errors,
                 "travel_party",
@@ -503,129 +526,163 @@ class TravelInsuranceFlow:
             if self.controller and app_id:
                 self.controller.update_travel_party_and_trip(app_id, payload)
 
+            selected_party = travel_party
+            existing_trip = data["travel_party_and_trip"]
+
         return {
             "response": {
                 "type": "form",
                 "message": "✈️ Travel details",
-                "fields": [
-                    {
-                        "name": "travel_party",
-                        "label": "Travel party",
-                        "type": "radio",
-                        "options": [
-                            {"id": "myself_only", "value": "myself_only", "label": "Myself only"},
-                            {
-                                "id": "myself_and_someone_else",
-                                "value": "myself_and_someone_else",
-                                "label": "Myself and someone else",
-                            },
-                            {"id": "group", "value": "group", "label": "Group"},
-                        ],
-                        "required": True,
-                    },
-                    {
-                        "name": "traveller_1_date_of_birth",
-                        "label": "Your Date of Birth",
-                        "type": "date",
-                        "required": False,
-                        "required_when": {"travel_party": ["myself_only", "myself_and_someone_else"]},
-                        "show_when": {"travel_party": ["myself_only", "myself_and_someone_else"]},
-                    },
-                    {
-                        "name": "traveller_2_date_of_birth",
-                        "label": "Second Traveller Date of Birth",
-                        "type": "date",
-                        "required": False,
-                        "required_when": {"travel_party": ["myself_and_someone_else"]},
-                        "show_when": {"travel_party": ["myself_and_someone_else"]},
-                    },
-                    {
-                        "name": "total_travellers",
-                        "label": "Total number of travellers",
-                        "type": "number",
-                        "min": 1,
-                        "required": False,
-                        "required_when": {"travel_party": ["group"]},
-                        "show_when": {"travel_party": ["group"]},
-                    },
-                    {
-                        "name": "num_travellers_18_69",
-                        "label": "Number of travellers (18–69 years)",
-                        "type": "number",
-                        "min": 0,
-                        "required": False,
-                        "required_when": {"travel_party": ["group"]},
-                        "show_when": {"travel_party": ["group"]},
-                    },
-                    {
-                        "name": "num_travellers_0_17",
-                        "label": "Number of travellers (0–17 years)",
-                        "type": "number",
-                        "min": 0,
-                        "required": False,
-                        "required_when": {"travel_party": ["group"]},
-                        "show_when": {"travel_party": ["group"]},
-                    },
-                    {
-                        "name": "num_travellers_70_75",
-                        "label": "Number of travellers (70–75 years)",
-                        "type": "number",
-                        "min": 0,
-                        "required": False,
-                        "required_when": {"travel_party": ["group"]},
-                        "show_when": {"travel_party": ["group"]},
-                    },
-                    {
-                        "name": "num_travellers_76_80",
-                        "label": "Number of travellers (76–80 years)",
-                        "type": "number",
-                        "min": 0,
-                        "required": False,
-                        "required_when": {"travel_party": ["group"]},
-                        "show_when": {"travel_party": ["group"]},
-                    },
-                    {
-                        "name": "num_travellers_81_85",
-                        "label": "Number of travellers (81–85 years)",
-                        "type": "number",
-                        "min": 0,
-                        "required": False,
-                        "required_when": {"travel_party": ["group"]},
-                        "show_when": {"travel_party": ["group"]},
-                    },
-                    {
-                        "name": "departure_country",
-                        "label": "Departure Country",
-                        "type": "select",
-                        "options": [
-                            {
-                                "value": DEPARTURE_COUNTRY,
-                                "label": DEPARTURE_COUNTRY,
-                            }
-                        ],
-                        "required": True,
-                    },
-                    {
-                        "name": "destination_country",
-                        "label": "Destination Country",
-                        "type": "select",
-                        "options": [
-                            {
-                                "value": country,
-                                "label": country,
-                            }
-                            for country in DESTINATION_COUNTRIES
-                        ],
-                        "required": True,
-                    },
-                    {"name": "departure_date", "label": "Departure Date", "type": "date", "required": True},
-                    {"name": "return_date", "label": "Return Date", "type": "date", "required": True},
-                ],
+                "fields": self._travel_party_fields(selected_party, existing_trip),
                 "info": "A change in number of travellers will result in a premium adjustment.",
             },
             "next_step": 3,
             "collected_data": data,
         }
+
+    def _travel_party_fields(self, selected_party: str, trip_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        fields: List[Dict[str, Any]] = [
+            {
+                "name": "travel_party",
+                "label": "Travel party",
+                "type": "radio",
+                "defaultValue": selected_party,
+                "options": [
+                    {"id": "myself_only", "value": "myself_only", "label": "Myself only"},
+                    {
+                        "id": "myself_and_someone_else",
+                        "value": "myself_and_someone_else",
+                        "label": "Myself and someone else",
+                    },
+                    {"id": "group", "value": "group", "label": "Group"},
+                ],
+                "required": True,
+            }
+        ]
+
+        if selected_party in ("myself_only", "myself_and_someone_else"):
+            fields.append(
+                {
+                    "name": "traveller_1_date_of_birth",
+                    "label": "Your Date of Birth",
+                    "type": "date",
+                    "required": True,
+                    "defaultValue": trip_data.get("traveller_1_date_of_birth", ""),
+                }
+            )
+
+        if selected_party == "myself_and_someone_else":
+            fields.append(
+                {
+                    "name": "traveller_2_date_of_birth",
+                    "label": "Second Traveller Date of Birth",
+                    "type": "date",
+                    "required": True,
+                    "defaultValue": trip_data.get("traveller_2_date_of_birth", ""),
+                }
+            )
+
+        if selected_party == "group":
+            fields.extend(
+                [
+                    {
+                        "name": "total_travellers",
+                        "label": "Total number of travellers",
+                        "type": "number",
+                        "min": 1,
+                        "required": True,
+                        "defaultValue": trip_data.get("total_travellers", ""),
+                    },
+                    {
+                        "name": "num_travellers_18_69",
+                        "label": "Number of travellers (18-69 years)",
+                        "type": "number",
+                        "min": 0,
+                        "required": True,
+                        "defaultValue": trip_data.get("num_travellers_18_69", ""),
+                    },
+                    {
+                        "name": "num_travellers_0_17",
+                        "label": "Number of travellers (0-17 years)",
+                        "type": "number",
+                        "min": 0,
+                        "required": True,
+                        "defaultValue": trip_data.get("num_travellers_0_17", ""),
+                    },
+                    {
+                        "name": "num_travellers_70_75",
+                        "label": "Number of travellers (70-75 years)",
+                        "type": "number",
+                        "min": 0,
+                        "required": True,
+                        "defaultValue": trip_data.get("num_travellers_70_75", ""),
+                    },
+                    {
+                        "name": "num_travellers_76_80",
+                        "label": "Number of travellers (76-80 years)",
+                        "type": "number",
+                        "min": 0,
+                        "required": True,
+                        "defaultValue": trip_data.get("num_travellers_76_80", ""),
+                    },
+                    {
+                        "name": "num_travellers_81_85",
+                        "label": "Number of travellers (81-85 years)",
+                        "type": "number",
+                        "min": 0,
+                        "required": True,
+                        "defaultValue": trip_data.get("num_travellers_81_85", ""),
+                    },
+                ]
+            )
+
+        fields.extend(
+            [
+                {
+                    "name": "departure_country",
+                    "label": "Departure Country",
+                    "type": "select",
+                    "defaultValue": trip_data.get("departure_country", DEPARTURE_COUNTRY),
+                    "options": [
+                        {
+                            "value": DEPARTURE_COUNTRY,
+                            "label": DEPARTURE_COUNTRY,
+                        }
+                    ],
+                    "required": True,
+                },
+                {
+                    "name": "destination_country",
+                    "label": "Destination Country",
+                    "type": "select",
+                    "defaultValue": trip_data.get("destination_country", ""),
+                    "options": [
+                        {
+                            "value": country,
+                            "label": country,
+                        }
+                        for country in DESTINATION_COUNTRIES
+                    ],
+                    "required": True,
+                },
+                {
+                    "name": "departure_date",
+                    "label": "Departure Date",
+                    "type": "date",
+                    "required": True,
+                    "defaultValue": trip_data.get("departure_date", ""),
+                },
+                {
+                    "name": "return_date",
+                    "label": "Return Date",
+                    "type": "date",
+                    "required": True,
+                    "defaultValue": trip_data.get("return_date", ""),
+                },
+            ]
+        )
+
+        return fields
 
     @staticmethod
     def _calculate_age(dob: date) -> int:
@@ -722,6 +779,126 @@ class TravelInsuranceFlow:
         data: Dict[str, Any],
         user_id: str,
     ) -> Dict[str, Any]:
+        # 1. Get the total number of travellers we need to collect
+        trip_info = data.get("travel_party_and_trip") or {}
+        total_needed = trip_info.get("total_travellers") or 1
+        
+        # Initialize travellers list if it doesn't exist
+        if "travellers" not in data:
+            data["travellers"] = []
+            
+        current_travellers = data["travellers"]
+        current_index = len(current_travellers) + 1 # e.g., Traveller 1, Traveller 2...
+
+        # 2. Process submission if payload exists
+        if payload and "_raw" not in payload:
+            errors: Dict[str, str] = {}
+
+            # Validation logic
+            require_str(payload, "first_name", errors, label="First Name")
+            require_str(payload, "surname", errors, label="Surname")
+            validate_in(
+                payload.get("nationality_type", ""),
+                ("ugandan", "non_ugandan"),
+                errors,
+                "nationality_type",
+                required=True,
+            )
+            require_str(payload, "passport_number", errors, label="Passport Number")
+            validate_date_iso(
+                payload.get("date_of_birth", ""),
+                errors,
+                "date_of_birth",
+                required=True,
+                not_future=True,
+            )
+            require_str(payload, "occupation", errors, label="Profession/Occupation")
+            validate_phone_ug(payload.get("phone_number", ""), errors, field="phone_number")
+            validate_email(payload.get("email", ""), errors, field="email")
+            require_str(payload, "postal_address", errors, label="Postal/Home Address")
+            require_str(payload, "town_city", errors, label="Town/City")
+
+            if errors:
+                raise_if_errors(errors)
+
+            # Map payload to traveller object
+            new_traveller = {
+                "first_name": payload.get("first_name", ""),
+                "middle_name": payload.get("middle_name", ""),
+                "surname": payload.get("surname", ""),
+                "nationality_type": payload.get("nationality_type", ""),
+                "passport_number": payload.get("passport_number", ""),
+                "date_of_birth": payload.get("date_of_birth", ""),
+                "occupation": payload.get("occupation", ""),
+                "phone_number": payload.get("phone_number", ""),
+                "email": payload.get("email", ""),
+                "postal_address": payload.get("postal_address", ""),
+                "town_city": payload.get("town_city", ""),
+            }
+
+            # Append the new traveller to our list
+            data["travellers"].append(new_traveller)
+            
+            # Persist via controller if available
+            app_id = data.get("application_id")
+            if self.controller and app_id:
+                self.controller.update_traveller_details(app_id, data["travellers"])
+
+            # 3. Check if we need more travellers
+            if len(data["travellers"]) < total_needed:
+                # Recursively call this step to get the next traveller's form
+                return await self._step_traveller_details({}, data, user_id)
+            else:
+                # All travellers collected, move to emergency contact (Step 5)
+                return await self._step_emergency_contact({}, data, user_id)
+
+        # 4. Prepare the Form for display
+        # If it's the first traveller, we can pre-fill from the "About You" step
+        prefill = {}
+        if current_index == 1:
+            prefill = data.get("about_you") or {}
+
+        # Dynamic message based on progress
+        msg = f"👤 Traveller {current_index} of {total_needed} – Please provide details"
+        if total_needed == 1:
+            msg = "👤 Traveller details – Please provide your details"
+
+        return {
+            "response": {
+                "type": "form",
+                "message": msg,
+                "fields": [
+                    {"name": "first_name", "label": "First Name", "type": "text", "required": True, "defaultValue": prefill.get("first_name", "")},
+                    {"name": "middle_name", "label": "Middle Name (Optional)", "type": "text", "required": False, "defaultValue": prefill.get("middle_name", "")},
+                    {"name": "surname", "label": "Surname", "type": "text", "required": True, "defaultValue": prefill.get("surname", "")},
+                    {
+                        "name": "nationality_type",
+                        "label": "Nationality Type",
+                        "type": "radio",
+                        "options": [
+                            {"id": "ugandan", "label": "Ugandan"},
+                            {"id": "non_ugandan", "label": "Non-Ugandan"},
+                        ],
+                        "required": True,
+                    },
+                    {"name": "passport_number", "label": "Passport Number", "type": "text", "required": True},
+                    {
+                        "name": "date_of_birth", 
+                        "label": "Date of Birth", 
+                        "type": "date", 
+                        "required": True,
+                        "defaultValue": prefill.get("traveller_1_date_of_birth", "") # If captured in trip step
+                    },
+                    {"name": "occupation", "label": "Profession/Occupation", "type": "text", "required": True},
+                    {"name": "phone_number", "label": "Phone Number", "type": "tel", "required": True, "defaultValue": prefill.get("phone_number", "")},
+                    {"name": "email", "label": "Email", "type": "email", "required": True, "defaultValue": prefill.get("email", "")},
+                    {"name": "postal_address", "label": "Postal/Home Address", "type": "text", "required": True},
+                    {"name": "town_city", "label": "Town/City", "type": "text", "required": True},
+                ],
+            },
+            "next_step": 4, # Stay on this step until total_needed is met
+            "collected_data": data,
+        }
         if payload and "_raw" not in payload:
             errors: Dict[str, str] = {}
 

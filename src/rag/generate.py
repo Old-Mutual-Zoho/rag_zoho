@@ -194,7 +194,7 @@ class MiaGenerator:
             return {}
 
     async def generate(self, question: str, hits: List[Dict[str, Any]], conversation_history: List[Dict] = None) -> str:
-        context, num_sources, avg_score = self._build_context(hits)
+        context, num_sources, _ = self._build_context(hits)
 
         context_note = (
             f"**Instructions:** Using the {num_sources} source(s) below, synthesize a natural conversational answer. "
@@ -204,39 +204,47 @@ class MiaGenerator:
             else "No relevant documents found. Say you don't have enough information and ask if the user wants to talk to a human agent."
         )
 
-        # Format conversation history
-        summary_text = ""
-        if conversation_history:
-            summary = self._build_history_summary(conversation_history)
-            if summary:
-                summary_text = f"\n\n**Conversation Summary:** {summary}"
-
+        # Keep history compact and avoid duplicating the same context as both
+        # free-form summary and transcript.
         history_text = ""
         if conversation_history:
             history_lines = []
-            for msg in conversation_history[-5:]:  # Last 5 messages for context
+            for msg in conversation_history[-6:]:
                 role = msg.get("role", "user")
-                content = msg.get("content", "")
+                content = " ".join((msg.get("content") or "").split())
+                if not content:
+                    continue
+                if len(content) > 280:
+                    content = content[:277].rstrip() + "..."
                 if role == "user":
                     history_lines.append(f"User: {content}")
                 elif role == "assistant":
                     history_lines.append(f"Assistant: {content}")
-            if history_lines:
-                history_text = "\n\n**Recent Conversation:**\n" + "\n".join(history_lines) + "\n"
 
-        full_prompt = f"{context_note}{summary_text}\n\n**User Question:** {question}{history_text}\n\n**Retrieved Data:**\n{context or 'None'}"
+            if history_lines:
+                history_text = "\n\n**Recent Conversation:**\n" + "\n".join(history_lines)
+            else:
+                summary = self._build_history_summary(conversation_history)
+                if summary:
+                    history_text = f"\n\n**Conversation Summary:** {summary}"
+
+        full_prompt = (
+            f"{context_note}{history_text}\n\n"
+            f"**User Question:** {question}\n\n"
+            f"**Retrieved Data:**\n{context or 'None'}"
+        )
 
         logger.info(f"Generating response for question: {question[:100]}... with {num_sources} sources")
 
-        def _sync_generate():
+        def _sync_generate(prompt: str, max_output_tokens: int = 1200):
             from google.genai import types
             response = self.client.models.generate_content(
                 model=MODEL_NAME,
-                contents=full_prompt,
+                contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
                     temperature=self.temperature,
-                    max_output_tokens=800,
+                    max_output_tokens=max_output_tokens,
                 ),
             )
             return response
@@ -244,11 +252,45 @@ class MiaGenerator:
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
-                response = await asyncio.to_thread(_sync_generate)
+                response = await asyncio.to_thread(_sync_generate, full_prompt, 1200)
                 text = (getattr(response, "text", "") or "").strip()
                 if not text:
                     logger.warning("GenAI returned empty text response.")
                     return "I'm having trouble retrieving those details right now. Please try again in a moment."
+
+                # Request a continuation only when Gemini itself reports the output
+                # was cut off at the token budget (finish_reason == MAX_TOKENS = 2).
+                # Checking the API field is far more reliable than text heuristics and
+                # avoids wasteful extra API calls on already-complete answers.
+                hit_token_limit = False
+                try:
+                    candidates = getattr(response, "candidates", None) or []
+                    if candidates:
+                        finish_reason = getattr(candidates[0], "finish_reason", None)
+                        # Gemini SDK may return an enum or a plain int; MAX_TOKENS = 2
+                        finish_reason_val = getattr(finish_reason, "value", finish_reason)
+                        if finish_reason_val == 2:
+                            hit_token_limit = True
+                            logger.info("Gemini hit max_output_tokens; requesting continuation")
+                except Exception:
+                    # If we cannot read finish_reason, fall back to text heuristic.
+                    hit_token_limit = self._looks_truncated(text)
+
+                if hit_token_limit:
+                    try:
+                        continuation_prompt = (
+                            "Continue the answer from where it stopped. "
+                            "Do not repeat the text already provided. "
+                            "Finish the incomplete thought in 1-3 short sentences.\n\n"
+                            f"Current partial answer:\n{text}"
+                        )
+                        continuation = await asyncio.to_thread(_sync_generate, continuation_prompt, 300)
+                        continuation_text = (getattr(continuation, "text", "") or "").strip()
+                        if continuation_text:
+                            text = self._merge_continuation(text, continuation_text)
+                    except Exception as continuation_error:
+                        logger.warning("Continuation attempt failed: %s", continuation_error)
+
                 logger.info("Successfully generated response from Gemini API")
                 return text
             except Exception as e:
@@ -266,6 +308,61 @@ class MiaGenerator:
                 await asyncio.sleep(backoff)
 
         return "I'm having trouble retrieving those details right now. Please try again in a moment."
+
+    @staticmethod
+    def _looks_truncated(text: str) -> bool:
+        s = (text or "").strip()
+        if not s:
+            return True
+
+        # Very short replies can naturally end without punctuation.
+        if len(s) < 80:
+            return False
+
+        if s.endswith((".", "!", "?", '"', "'", "*", ")", "]")):
+            return False
+
+        last_word = s.split()[-1].strip(".,!?;:'\")]").lower()
+        dangling_words = {
+            "a", "an", "and", "as", "at", "because", "but", "for",
+            "from", "in", "into", "of", "on", "or", "that", "the",
+            "to", "with", "which",
+        }
+        if last_word in dangling_words:
+            return True
+
+        # Unbalanced markdown bold is a strong signal of a cut-off answer.
+        if s.count("**") % 2 == 1:
+            return True
+
+        return False
+
+    @staticmethod
+    def _merge_continuation(base_text: str, continuation_text: str) -> str:
+        base = (base_text or "").rstrip()
+        cont = (continuation_text or "").strip()
+        if not cont:
+            return base
+
+        if cont.lower() in base.lower():
+            return base
+
+        # Remove simple overlap when continuation starts by repeating the tail.
+        max_overlap = min(80, len(base), len(cont))
+        overlap = 0
+        for size in range(max_overlap, 11, -1):
+            if base[-size:].lower() == cont[:size].lower():
+                overlap = size
+                break
+
+        if overlap > 0:
+            cont = cont[overlap:].lstrip()
+
+        if not cont:
+            return base
+
+        separator = " " if base and base[-1].isalnum() and cont[0].isalnum() else ""
+        return f"{base}{separator}{cont}"
 
 
 def generate_with_gemini(

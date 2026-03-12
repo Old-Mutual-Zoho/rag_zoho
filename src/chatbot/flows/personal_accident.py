@@ -562,11 +562,7 @@ class PersonalAccidentFlow:
                 "name": "gender",
                 "label": "Gender",
                 "type": "select",
-                "options": [
-                    {"value": "Male", "label": "Male"},
-                    {"value": "Female", "label": "Female"},
-                    {"value": "Other", "label": "Other"},
-                ],
+                "options": ["Male", "Female", "Other"],
                 "required": True,
                 "defaultValue": prefilled_personal.get("gender", ""),
             },

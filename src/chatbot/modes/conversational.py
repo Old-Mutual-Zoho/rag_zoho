@@ -51,6 +51,99 @@ def _detect_digital_flow(message: str) -> str | None:
     return None
 
 
+def _digital_flow_search_hint(digital_flow: str | None) -> str | None:
+    if digital_flow == "motor_private":
+        return "Motor Insurance"
+    if digital_flow == "travel_insurance":
+        return "Travel Insurance"
+    if digital_flow == "personal_accident":
+        return "Personal Accident"
+    if digital_flow == "serenicare":
+        return "Serenicare"
+    return None
+
+
+def _resolve_doc_ids_for_digital_flow(product_matcher: Any, digital_flow: str | None, *, max_results: int = 2) -> List[str]:
+    """Resolve likely product doc_ids for a detected guided flow.
+
+    This is a fallback path when lexical product matching misses short queries
+    like "car insurance" but we can still detect the intended flow.
+    """
+    if not digital_flow or product_matcher is None:
+        return []
+
+    direct_aliases = [
+        digital_flow,
+        digital_flow.replace("_", "-"),
+        digital_flow.replace("_", " "),
+    ]
+    resolved: List[str] = []
+    for alias in direct_aliases:
+        try:
+            if hasattr(product_matcher, "resolve_doc_id"):
+                doc_id = product_matcher.resolve_doc_id(alias)
+                if doc_id and doc_id not in resolved:
+                    resolved.append(doc_id)
+        except Exception:
+            # Best effort only; continue with index-scoring fallback.
+            continue
+    if resolved:
+        return resolved[:max_results]
+
+    index = getattr(product_matcher, "product_index", None)
+    if not isinstance(index, dict) or not index:
+        return []
+
+    alias_map: Dict[str, List[str]] = {
+        "motor_private": ["motor private", "motor insurance", "car insurance", "vehicle insurance", "motor-insurance"],
+        "travel_insurance": ["travel insurance", "travel sure", "travel policy", "travel cover"],
+        "personal_accident": ["personal accident", "accident insurance", "accident cover", "pa cover"],
+        "serenicare": ["serenicare", "health insurance", "medical cover"],
+    }
+    penalties: Dict[str, List[str]] = {
+        # Prevent "car insurance" from drifting to business/commercial products.
+        "motor_private": ["commercial", "business"],
+    }
+
+    candidates: List[tuple[int, str]] = []
+    aliases = alias_map.get(digital_flow, [digital_flow.replace("_", " ")])
+    negative_terms = penalties.get(digital_flow, [])
+
+    for item in index.values():
+        if not isinstance(item, dict):
+            continue
+        doc_id = item.get("doc_id") or item.get("product_id")
+        if not doc_id:
+            continue
+
+        haystack = " ".join(
+            [
+                str(item.get("name") or ""),
+                str(item.get("slug") or ""),
+                str(item.get("product_key") or ""),
+                str(item.get("doc_id") or ""),
+            ]
+        ).lower()
+        score = 0
+        for alias in aliases:
+            alias_l = alias.lower()
+            if alias_l and alias_l in haystack:
+                score += 4 if " " in alias_l else 2
+        for bad in negative_terms:
+            if bad in haystack:
+                score -= 3
+        if score > 0:
+            candidates.append((score, str(doc_id)))
+
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    for _, doc_id in candidates:
+        if doc_id not in resolved:
+            resolved.append(doc_id)
+        if len(resolved) >= max_results:
+            break
+    return resolved
+
+
 def _is_broad_product_query(message: str) -> bool:
     m = (message or "").lower()
     if not m:
@@ -552,6 +645,7 @@ class ConversationalMode:
         broad_query = _is_broad_product_query(message)
         intent = self._detect_intent(message)
         explicit_guided_intent = _is_explicit_guided_intent(message)
+        detected_product = _detect_digital_flow(message)
         if broad_query and intent in ("learn", "general"):
             intent = "discover"
 
@@ -568,6 +662,12 @@ class ConversationalMode:
             topic.get("name"),
             use_topic=should_reuse_topic,
         )
+        if detected_product:
+            query_with_topic = _augment_query_with_topic(
+                query_with_topic,
+                _digital_flow_search_hint(detected_product),
+                use_topic=True,
+            )
         should_use_history = _is_followup_message(message) and bool(recent_history) and not _detect_digital_flow(message)
         retrieval_query = _augment_query_with_history(
             query_with_topic,
@@ -581,9 +681,6 @@ class ConversationalMode:
             top_score = float(products[0][0] or 0.0)
             second_score = float(products[1][0] or 0.0) if len(products) > 1 else 0.0
             is_confident = (top_score >= 1.2) and (top_score >= second_score + 0.5)
-
-            # Detect if user is asking about a specific product (e.g., "what is serenicare")
-            detected_product = _detect_digital_flow(message)
 
             logger.info(
                 "[RAG] Product match: top_score=%s, is_confident=%s, detected=%s, products=%s",
@@ -608,6 +705,11 @@ class ConversationalMode:
                 # Single-product intent with high confidence: restrict to the best match.
                 filters["products"] = [products[0][2]["product_id"]]
                 logger.info("[RAG] Applying confident product filter: %s", products[0][2]["product_id"])
+        elif detected_product:
+            detected_doc_ids = _resolve_doc_ids_for_digital_flow(self.product_matcher, detected_product)
+            if detected_doc_ids:
+                filters["products"] = detected_doc_ids
+                logger.info("[RAG] Applying digital flow fallback filter: flow=%s, doc_ids=%s", detected_product, detected_doc_ids)
         elif should_reuse_topic and topic.get("doc_id"):
             filters["products"] = [topic["doc_id"]]
             logger.info("[RAG] Reusing session product topic filter without fresh product match: %s", topic["doc_id"])
@@ -616,7 +718,12 @@ class ConversationalMode:
         retrieval_results = await self.rag.retrieve(query=retrieval_query, filters=filters or None, top_k=None)
 
         # Generate response
-        response = await self.rag.generate(query=retrieval_query, context_docs=retrieval_results, conversation_history=recent_history)
+        response = await self._generate_with_optional_original_question(
+            query=retrieval_query,
+            context_docs=retrieval_results,
+            conversation_history=recent_history,
+            original_question=message,
+        )
 
         # ---- Record RAG metrics ----
         confidence = _estimate_response_confidence(response, retrieval_results, products, filters)
@@ -632,9 +739,9 @@ class ConversationalMode:
         # --- Escalation/handover logic ---
         session = self.state_manager.get_session(session_id) or {}
 
-        # If confidence is low, suggest handover button
+        # If confidence is very low, suggest handover button.
         show_handover_button = False
-        if confidence < 0.4:
+        if confidence < 0.2:
             show_handover_button = True
 
         products_matched_names = [p[2]["name"] for p in products] if products else []
@@ -957,6 +1064,31 @@ class ConversationalMode:
 
         return "\n\n".join(parts)
 
+    async def _generate_with_optional_original_question(
+        self,
+        *,
+        query: str,
+        context_docs: List[Dict[str, Any]],
+        conversation_history: List[Dict[str, Any]],
+        original_question: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Call rag.generate while staying compatible with older adapters/tests."""
+        try:
+            return await self.rag.generate(
+                query=query,
+                context_docs=context_docs,
+                conversation_history=conversation_history,
+                original_question=original_question,
+            )
+        except TypeError as exc:
+            if "original_question" not in str(exc):
+                raise
+            return await self.rag.generate(
+                query=query,
+                context_docs=context_docs,
+                conversation_history=conversation_history,
+            )
+
     def _detect_intent(self, message: str) -> str:
         """Detect coarse user intent from message (quote/buy/learn/compare/discover/claim/general)."""
         message_lower = message.lower()
@@ -1060,7 +1192,7 @@ class ConversationalMode:
         # Fallback – should rarely be hit.
         return "How can I help you with Old Mutual products or services today?"
 
-    def _get_recent_history(self, session_id: str, limit: int = 5) -> List[Dict]:
+    def _get_recent_history(self, session_id: str, limit: int = 10) -> List[Dict]:
         """Get recent conversation history.
 
         Fast path: reads the rolling ``recent_messages`` buffer stored in the
