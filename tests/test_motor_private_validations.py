@@ -9,7 +9,6 @@ These tests focus on MotorPrivateFlow.complete_flow, ensuring that:
 
 import pytest
 from datetime import date, timedelta
-from types import SimpleNamespace
 
 from src.chatbot.flows.motor_private import MotorPrivateFlow
 from src.chatbot.validation import FormValidationError
