@@ -341,6 +341,11 @@ class TravelInsuranceFlow:
         data: Dict[str, Any],
         user_id: str,
     ) -> Dict[str, Any]:
+        existing_trip = data.get("travel_party_and_trip") or {}
+        selected_party = str(
+            payload.get("travel_party") or existing_trip.get("travel_party") or "myself_only"
+        ).strip()
+
         travel_fields = {
             "travel_party",
             "total_travellers",
@@ -358,11 +363,29 @@ class TravelInsuranceFlow:
         }
         has_travel_submission = any(field in payload for field in travel_fields)
 
+        # Frontends may submit only `travel_party` first to reveal relevant DOB/count fields.
+        # Treat that as a progressive render update instead of a full validation submission.
+        if payload and "_raw" not in payload:
+            payload_keys = set(payload.keys())
+            if payload_keys == {"travel_party"}:
+                existing_trip["travel_party"] = selected_party
+                data["travel_party_and_trip"] = existing_trip
+                return {
+                    "response": {
+                        "type": "form",
+                        "message": "✈️ Travel details",
+                        "fields": self._travel_party_fields(selected_party, existing_trip),
+                        "info": "A change in number of travellers will result in a premium adjustment.",
+                    },
+                    "next_step": 3,
+                    "collected_data": data,
+                }
+
         if payload and "_raw" not in payload and has_travel_submission:
             errors: Dict[str, str] = {}
 
             travel_party = validate_in(
-                payload.get("travel_party", ""),
+                payload.get("travel_party", existing_trip.get("travel_party", "")),
                 ("myself_only", "myself_and_someone_else", "group"),
                 errors,
                 "travel_party",
@@ -503,129 +526,163 @@ class TravelInsuranceFlow:
             if self.controller and app_id:
                 self.controller.update_travel_party_and_trip(app_id, payload)
 
+            selected_party = travel_party
+            existing_trip = data["travel_party_and_trip"]
+
         return {
             "response": {
                 "type": "form",
                 "message": "✈️ Travel details",
-                "fields": [
-                    {
-                        "name": "travel_party",
-                        "label": "Travel party",
-                        "type": "radio",
-                        "options": [
-                            {"id": "myself_only", "value": "myself_only", "label": "Myself only"},
-                            {
-                                "id": "myself_and_someone_else",
-                                "value": "myself_and_someone_else",
-                                "label": "Myself and someone else",
-                            },
-                            {"id": "group", "value": "group", "label": "Group"},
-                        ],
-                        "required": True,
-                    },
-                    {
-                        "name": "traveller_1_date_of_birth",
-                        "label": "Your Date of Birth",
-                        "type": "date",
-                        "required": False,
-                        "required_when": {"travel_party": ["myself_only", "myself_and_someone_else"]},
-                        "show_when": {"travel_party": ["myself_only", "myself_and_someone_else"]},
-                    },
-                    {
-                        "name": "traveller_2_date_of_birth",
-                        "label": "Second Traveller Date of Birth",
-                        "type": "date",
-                        "required": False,
-                        "required_when": {"travel_party": ["myself_and_someone_else"]},
-                        "show_when": {"travel_party": ["myself_and_someone_else"]},
-                    },
-                    {
-                        "name": "total_travellers",
-                        "label": "Total number of travellers",
-                        "type": "number",
-                        "min": 1,
-                        "required": False,
-                        "required_when": {"travel_party": ["group"]},
-                        "show_when": {"travel_party": ["group"]},
-                    },
-                    {
-                        "name": "num_travellers_18_69",
-                        "label": "Number of travellers (18–69 years)",
-                        "type": "number",
-                        "min": 0,
-                        "required": False,
-                        "required_when": {"travel_party": ["group"]},
-                        "show_when": {"travel_party": ["group"]},
-                    },
-                    {
-                        "name": "num_travellers_0_17",
-                        "label": "Number of travellers (0–17 years)",
-                        "type": "number",
-                        "min": 0,
-                        "required": False,
-                        "required_when": {"travel_party": ["group"]},
-                        "show_when": {"travel_party": ["group"]},
-                    },
-                    {
-                        "name": "num_travellers_70_75",
-                        "label": "Number of travellers (70–75 years)",
-                        "type": "number",
-                        "min": 0,
-                        "required": False,
-                        "required_when": {"travel_party": ["group"]},
-                        "show_when": {"travel_party": ["group"]},
-                    },
-                    {
-                        "name": "num_travellers_76_80",
-                        "label": "Number of travellers (76–80 years)",
-                        "type": "number",
-                        "min": 0,
-                        "required": False,
-                        "required_when": {"travel_party": ["group"]},
-                        "show_when": {"travel_party": ["group"]},
-                    },
-                    {
-                        "name": "num_travellers_81_85",
-                        "label": "Number of travellers (81–85 years)",
-                        "type": "number",
-                        "min": 0,
-                        "required": False,
-                        "required_when": {"travel_party": ["group"]},
-                        "show_when": {"travel_party": ["group"]},
-                    },
-                    {
-                        "name": "departure_country",
-                        "label": "Departure Country",
-                        "type": "select",
-                        "options": [
-                            {
-                                "value": DEPARTURE_COUNTRY,
-                                "label": DEPARTURE_COUNTRY,
-                            }
-                        ],
-                        "required": True,
-                    },
-                    {
-                        "name": "destination_country",
-                        "label": "Destination Country",
-                        "type": "select",
-                        "options": [
-                            {
-                                "value": country,
-                                "label": country,
-                            }
-                            for country in DESTINATION_COUNTRIES
-                        ],
-                        "required": True,
-                    },
-                    {"name": "departure_date", "label": "Departure Date", "type": "date", "required": True},
-                    {"name": "return_date", "label": "Return Date", "type": "date", "required": True},
-                ],
+                "fields": self._travel_party_fields(selected_party, existing_trip),
                 "info": "A change in number of travellers will result in a premium adjustment.",
             },
             "next_step": 3,
             "collected_data": data,
         }
+
+    def _travel_party_fields(self, selected_party: str, trip_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        fields: List[Dict[str, Any]] = [
+            {
+                "name": "travel_party",
+                "label": "Travel party",
+                "type": "radio",
+                "defaultValue": selected_party,
+                "options": [
+                    {"id": "myself_only", "value": "myself_only", "label": "Myself only"},
+                    {
+                        "id": "myself_and_someone_else",
+                        "value": "myself_and_someone_else",
+                        "label": "Myself and someone else",
+                    },
+                    {"id": "group", "value": "group", "label": "Group"},
+                ],
+                "required": True,
+            }
+        ]
+
+        if selected_party in ("myself_only", "myself_and_someone_else"):
+            fields.append(
+                {
+                    "name": "traveller_1_date_of_birth",
+                    "label": "Your Date of Birth",
+                    "type": "date",
+                    "required": True,
+                    "defaultValue": trip_data.get("traveller_1_date_of_birth", ""),
+                }
+            )
+
+        if selected_party == "myself_and_someone_else":
+            fields.append(
+                {
+                    "name": "traveller_2_date_of_birth",
+                    "label": "Second Traveller Date of Birth",
+                    "type": "date",
+                    "required": True,
+                    "defaultValue": trip_data.get("traveller_2_date_of_birth", ""),
+                }
+            )
+
+        if selected_party == "group":
+            fields.extend(
+                [
+                    {
+                        "name": "total_travellers",
+                        "label": "Total number of travellers",
+                        "type": "number",
+                        "min": 1,
+                        "required": True,
+                        "defaultValue": trip_data.get("total_travellers", ""),
+                    },
+                    {
+                        "name": "num_travellers_18_69",
+                        "label": "Number of travellers (18-69 years)",
+                        "type": "number",
+                        "min": 0,
+                        "required": True,
+                        "defaultValue": trip_data.get("num_travellers_18_69", ""),
+                    },
+                    {
+                        "name": "num_travellers_0_17",
+                        "label": "Number of travellers (0-17 years)",
+                        "type": "number",
+                        "min": 0,
+                        "required": True,
+                        "defaultValue": trip_data.get("num_travellers_0_17", ""),
+                    },
+                    {
+                        "name": "num_travellers_70_75",
+                        "label": "Number of travellers (70-75 years)",
+                        "type": "number",
+                        "min": 0,
+                        "required": True,
+                        "defaultValue": trip_data.get("num_travellers_70_75", ""),
+                    },
+                    {
+                        "name": "num_travellers_76_80",
+                        "label": "Number of travellers (76-80 years)",
+                        "type": "number",
+                        "min": 0,
+                        "required": True,
+                        "defaultValue": trip_data.get("num_travellers_76_80", ""),
+                    },
+                    {
+                        "name": "num_travellers_81_85",
+                        "label": "Number of travellers (81-85 years)",
+                        "type": "number",
+                        "min": 0,
+                        "required": True,
+                        "defaultValue": trip_data.get("num_travellers_81_85", ""),
+                    },
+                ]
+            )
+
+        fields.extend(
+            [
+                {
+                    "name": "departure_country",
+                    "label": "Departure Country",
+                    "type": "select",
+                    "defaultValue": trip_data.get("departure_country", DEPARTURE_COUNTRY),
+                    "options": [
+                        {
+                            "value": DEPARTURE_COUNTRY,
+                            "label": DEPARTURE_COUNTRY,
+                        }
+                    ],
+                    "required": True,
+                },
+                {
+                    "name": "destination_country",
+                    "label": "Destination Country",
+                    "type": "select",
+                    "defaultValue": trip_data.get("destination_country", ""),
+                    "options": [
+                        {
+                            "value": country,
+                            "label": country,
+                        }
+                        for country in DESTINATION_COUNTRIES
+                    ],
+                    "required": True,
+                },
+                {
+                    "name": "departure_date",
+                    "label": "Departure Date",
+                    "type": "date",
+                    "required": True,
+                    "defaultValue": trip_data.get("departure_date", ""),
+                },
+                {
+                    "name": "return_date",
+                    "label": "Return Date",
+                    "type": "date",
+                    "required": True,
+                    "defaultValue": trip_data.get("return_date", ""),
+                },
+            ]
+        )
+
+        return fields
 
     @staticmethod
     def _calculate_age(dob: date) -> int:

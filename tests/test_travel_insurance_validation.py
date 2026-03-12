@@ -116,6 +116,36 @@ async def test_travel_party_country_select_options_use_value_label(flow):
 
 
 @pytest.mark.asyncio
+async def test_travel_party_selection_only_renders_myself_dob(flow):
+    result = await flow._step_travel_party_and_trip({"travel_party": "myself_only"}, {}, "user-1")
+    fields = {field["name"] for field in result.get("response", {}).get("fields", [])}
+    assert "traveller_1_date_of_birth" in fields
+    assert "traveller_2_date_of_birth" not in fields
+    assert "total_travellers" not in fields
+
+
+@pytest.mark.asyncio
+async def test_travel_party_selection_only_renders_two_dobs(flow):
+    result = await flow._step_travel_party_and_trip(
+        {"travel_party": "myself_and_someone_else"}, {}, "user-1"
+    )
+    fields = {field["name"] for field in result.get("response", {}).get("fields", [])}
+    assert "traveller_1_date_of_birth" in fields
+    assert "traveller_2_date_of_birth" in fields
+    assert "total_travellers" not in fields
+
+
+@pytest.mark.asyncio
+async def test_travel_party_selection_only_renders_group_counts(flow):
+    result = await flow._step_travel_party_and_trip({"travel_party": "group"}, {}, "user-1")
+    fields = {field["name"] for field in result.get("response", {}).get("fields", [])}
+    assert "traveller_1_date_of_birth" not in fields
+    assert "traveller_2_date_of_birth" not in fields
+    assert "total_travellers" in fields
+    assert "num_travellers_18_69" in fields
+
+
+@pytest.mark.asyncio
 async def test_travel_party_myself_only_requires_primary_dob(flow):
     payload = {
         "travel_party": "myself_only",
