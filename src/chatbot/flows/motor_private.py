@@ -752,13 +752,27 @@ class MotorPrivateFlow:
     async def _step_additional_benefits(self, payload: Dict, data: Dict, user_id: str) -> Dict:
         try:
             if payload and "_raw" not in payload:
-                selected = payload.get("additional_benefits") or []
+                selected = (
+                    payload.get("additional_benefits")
+                    or payload.get("risky_activities")
+                    or []
+                )
                 if isinstance(selected, str):
                     selected = [s.strip() for s in selected.split(",") if s.strip()]
                 selected = [str(item).strip() for item in selected if str(item).strip()]
-                if not selected:
+
+                allowed_ids = {b["id"] for b in MOTOR_PRIVATE_ADDITIONAL_BENEFITS}
+                # Frontend may send mixed checkbox payloads; keep only valid benefit IDs.
+                cleaned = []
+                seen = set()
+                for item in selected:
+                    if item in allowed_ids and item not in seen:
+                        cleaned.append(item)
+                        seen.add(item)
+
+                if not cleaned:
                     raise_if_errors({"additional_benefits": "Please select at least one additional benefit."})
-                data["additional_benefits"] = selected
+                data["additional_benefits"] = cleaned
                 out = await self._step_benefits_summary({}, data, user_id)
                 out["next_step"] = 4
                 return out
