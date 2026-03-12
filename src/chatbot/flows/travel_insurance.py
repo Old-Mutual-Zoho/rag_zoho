@@ -208,7 +208,7 @@ class TravelInsuranceFlow:
                 "products": [
                     {
                         "id": p["id"],
-                        "label": p["label"],
+                           "label": p.get("label", p.get("id", "")),
                         "description": p["description"],
                         "action": "select_cover",
                         "selected": p["id"] == data.get("selected_product", {}).get("id"),
@@ -722,6 +722,126 @@ class TravelInsuranceFlow:
         data: Dict[str, Any],
         user_id: str,
     ) -> Dict[str, Any]:
+        # 1. Get the total number of travellers we need to collect
+        trip_info = data.get("travel_party_and_trip") or {}
+        total_needed = trip_info.get("total_travellers") or 1
+        
+        # Initialize travellers list if it doesn't exist
+        if "travellers" not in data:
+            data["travellers"] = []
+            
+        current_travellers = data["travellers"]
+        current_index = len(current_travellers) + 1 # e.g., Traveller 1, Traveller 2...
+
+        # 2. Process submission if payload exists
+        if payload and "_raw" not in payload:
+            errors: Dict[str, str] = {}
+
+            # Validation logic
+            require_str(payload, "first_name", errors, label="First Name")
+            require_str(payload, "surname", errors, label="Surname")
+            validate_in(
+                payload.get("nationality_type", ""),
+                ("ugandan", "non_ugandan"),
+                errors,
+                "nationality_type",
+                required=True,
+            )
+            require_str(payload, "passport_number", errors, label="Passport Number")
+            validate_date_iso(
+                payload.get("date_of_birth", ""),
+                errors,
+                "date_of_birth",
+                required=True,
+                not_future=True,
+            )
+            require_str(payload, "occupation", errors, label="Profession/Occupation")
+            validate_phone_ug(payload.get("phone_number", ""), errors, field="phone_number")
+            validate_email(payload.get("email", ""), errors, field="email")
+            require_str(payload, "postal_address", errors, label="Postal/Home Address")
+            require_str(payload, "town_city", errors, label="Town/City")
+
+            if errors:
+                raise_if_errors(errors)
+
+            # Map payload to traveller object
+            new_traveller = {
+                "first_name": payload.get("first_name", ""),
+                "middle_name": payload.get("middle_name", ""),
+                "surname": payload.get("surname", ""),
+                "nationality_type": payload.get("nationality_type", ""),
+                "passport_number": payload.get("passport_number", ""),
+                "date_of_birth": payload.get("date_of_birth", ""),
+                "occupation": payload.get("occupation", ""),
+                "phone_number": payload.get("phone_number", ""),
+                "email": payload.get("email", ""),
+                "postal_address": payload.get("postal_address", ""),
+                "town_city": payload.get("town_city", ""),
+            }
+
+            # Append the new traveller to our list
+            data["travellers"].append(new_traveller)
+            
+            # Persist via controller if available
+            app_id = data.get("application_id")
+            if self.controller and app_id:
+                self.controller.update_traveller_details(app_id, data["travellers"])
+
+            # 3. Check if we need more travellers
+            if len(data["travellers"]) < total_needed:
+                # Recursively call this step to get the next traveller's form
+                return await self._step_traveller_details({}, data, user_id)
+            else:
+                # All travellers collected, move to emergency contact (Step 5)
+                return await self._step_emergency_contact({}, data, user_id)
+
+        # 4. Prepare the Form for display
+        # If it's the first traveller, we can pre-fill from the "About You" step
+        prefill = {}
+        if current_index == 1:
+            prefill = data.get("about_you") or {}
+
+        # Dynamic message based on progress
+        msg = f"👤 Traveller {current_index} of {total_needed} – Please provide details"
+        if total_needed == 1:
+            msg = "👤 Traveller details – Please provide your details"
+
+        return {
+            "response": {
+                "type": "form",
+                "message": msg,
+                "fields": [
+                    {"name": "first_name", "label": "First Name", "type": "text", "required": True, "defaultValue": prefill.get("first_name", "")},
+                    {"name": "middle_name", "label": "Middle Name (Optional)", "type": "text", "required": False, "defaultValue": prefill.get("middle_name", "")},
+                    {"name": "surname", "label": "Surname", "type": "text", "required": True, "defaultValue": prefill.get("surname", "")},
+                    {
+                        "name": "nationality_type",
+                        "label": "Nationality Type",
+                        "type": "radio",
+                        "options": [
+                            {"id": "ugandan", "label": "Ugandan"},
+                            {"id": "non_ugandan", "label": "Non-Ugandan"},
+                        ],
+                        "required": True,
+                    },
+                    {"name": "passport_number", "label": "Passport Number", "type": "text", "required": True},
+                    {
+                        "name": "date_of_birth", 
+                        "label": "Date of Birth", 
+                        "type": "date", 
+                        "required": True,
+                        "defaultValue": prefill.get("traveller_1_date_of_birth", "") # If captured in trip step
+                    },
+                    {"name": "occupation", "label": "Profession/Occupation", "type": "text", "required": True},
+                    {"name": "phone_number", "label": "Phone Number", "type": "tel", "required": True, "defaultValue": prefill.get("phone_number", "")},
+                    {"name": "email", "label": "Email", "type": "email", "required": True, "defaultValue": prefill.get("email", "")},
+                    {"name": "postal_address", "label": "Postal/Home Address", "type": "text", "required": True},
+                    {"name": "town_city", "label": "Town/City", "type": "text", "required": True},
+                ],
+            },
+            "next_step": 4, # Stay on this step until total_needed is met
+            "collected_data": data,
+        }
         if payload and "_raw" not in payload:
             errors: Dict[str, str] = {}
 
