@@ -236,7 +236,7 @@ class MiaGenerator:
 
         logger.info(f"Generating response for question: {question[:100]}... with {num_sources} sources")
 
-        def _sync_generate(prompt: str, max_output_tokens: int = 800):
+        def _sync_generate(prompt: str, max_output_tokens: int = 1200):
             from google.genai import types
             response = self.client.models.generate_content(
                 model=MODEL_NAME,
@@ -252,15 +252,31 @@ class MiaGenerator:
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
-                response = await asyncio.to_thread(_sync_generate, full_prompt, 800)
+                response = await asyncio.to_thread(_sync_generate, full_prompt, 1200)
                 text = (getattr(response, "text", "") or "").strip()
                 if not text:
                     logger.warning("GenAI returned empty text response.")
                     return "I'm having trouble retrieving those details right now. Please try again in a moment."
 
-                # Some provider-side stops can return partial text. If we detect an
-                # abrupt ending, ask for a short continuation and stitch it in.
-                if self._looks_truncated(text):
+                # Request a continuation only when Gemini itself reports the output
+                # was cut off at the token budget (finish_reason == MAX_TOKENS = 2).
+                # Checking the API field is far more reliable than text heuristics and
+                # avoids wasteful extra API calls on already-complete answers.
+                hit_token_limit = False
+                try:
+                    candidates = getattr(response, "candidates", None) or []
+                    if candidates:
+                        finish_reason = getattr(candidates[0], "finish_reason", None)
+                        # Gemini SDK may return an enum or a plain int; MAX_TOKENS = 2
+                        finish_reason_val = getattr(finish_reason, "value", finish_reason)
+                        if finish_reason_val == 2:
+                            hit_token_limit = True
+                            logger.info("Gemini hit max_output_tokens; requesting continuation")
+                except Exception:
+                    # If we cannot read finish_reason, fall back to text heuristic.
+                    hit_token_limit = self._looks_truncated(text)
+
+                if hit_token_limit:
                     try:
                         continuation_prompt = (
                             "Continue the answer from where it stopped. "
@@ -268,7 +284,7 @@ class MiaGenerator:
                             "Finish the incomplete thought in 1-3 short sentences.\n\n"
                             f"Current partial answer:\n{text}"
                         )
-                        continuation = await asyncio.to_thread(_sync_generate, continuation_prompt, 240)
+                        continuation = await asyncio.to_thread(_sync_generate, continuation_prompt, 300)
                         continuation_text = (getattr(continuation, "text", "") or "").strip()
                         if continuation_text:
                             text = self._merge_continuation(text, continuation_text)
@@ -319,7 +335,7 @@ class MiaGenerator:
         if s.count("**") % 2 == 1:
             return True
 
-        return True
+        return False
 
     @staticmethod
     def _merge_continuation(base_text: str, continuation_text: str) -> str:
