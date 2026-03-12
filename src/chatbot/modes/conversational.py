@@ -718,7 +718,12 @@ class ConversationalMode:
         retrieval_results = await self.rag.retrieve(query=retrieval_query, filters=filters or None, top_k=None)
 
         # Generate response
-        response = await self.rag.generate(query=retrieval_query, context_docs=retrieval_results, conversation_history=recent_history)
+        response = await self._generate_with_optional_original_question(
+            query=retrieval_query,
+            context_docs=retrieval_results,
+            conversation_history=recent_history,
+            original_question=message,
+        )
 
         # ---- Record RAG metrics ----
         confidence = _estimate_response_confidence(response, retrieval_results, products, filters)
@@ -1059,6 +1064,31 @@ class ConversationalMode:
 
         return "\n\n".join(parts)
 
+    async def _generate_with_optional_original_question(
+        self,
+        *,
+        query: str,
+        context_docs: List[Dict[str, Any]],
+        conversation_history: List[Dict[str, Any]],
+        original_question: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Call rag.generate while staying compatible with older adapters/tests."""
+        try:
+            return await self.rag.generate(
+                query=query,
+                context_docs=context_docs,
+                conversation_history=conversation_history,
+                original_question=original_question,
+            )
+        except TypeError as exc:
+            if "original_question" not in str(exc):
+                raise
+            return await self.rag.generate(
+                query=query,
+                context_docs=context_docs,
+                conversation_history=conversation_history,
+            )
+
     def _detect_intent(self, message: str) -> str:
         """Detect coarse user intent from message (quote/buy/learn/compare/discover/claim/general)."""
         message_lower = message.lower()
@@ -1162,7 +1192,7 @@ class ConversationalMode:
         # Fallback – should rarely be hit.
         return "How can I help you with Old Mutual products or services today?"
 
-    def _get_recent_history(self, session_id: str, limit: int = 5) -> List[Dict]:
+    def _get_recent_history(self, session_id: str, limit: int = 10) -> List[Dict]:
         """Get recent conversation history.
 
         Fast path: reads the rolling ``recent_messages`` buffer stored in the

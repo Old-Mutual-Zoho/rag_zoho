@@ -194,7 +194,7 @@ class MiaGenerator:
             return {}
 
     async def generate(self, question: str, hits: List[Dict[str, Any]], conversation_history: List[Dict] = None) -> str:
-        context, num_sources, avg_score = self._build_context(hits)
+        context, num_sources, _ = self._build_context(hits)
 
         context_note = (
             f"**Instructions:** Using the {num_sources} source(s) below, synthesize a natural conversational answer. "
@@ -204,27 +204,35 @@ class MiaGenerator:
             else "No relevant documents found. Say you don't have enough information and ask if the user wants to talk to a human agent."
         )
 
-        # Format conversation history
-        summary_text = ""
-        if conversation_history:
-            summary = self._build_history_summary(conversation_history)
-            if summary:
-                summary_text = f"\n\n**Conversation Summary:** {summary}"
-
+        # Keep history compact and avoid duplicating the same context as both
+        # free-form summary and transcript.
         history_text = ""
         if conversation_history:
             history_lines = []
-            for msg in conversation_history[-5:]:  # Last 5 messages for context
+            for msg in conversation_history[-6:]:
                 role = msg.get("role", "user")
-                content = msg.get("content", "")
+                content = " ".join((msg.get("content") or "").split())
+                if not content:
+                    continue
+                if len(content) > 280:
+                    content = content[:277].rstrip() + "..."
                 if role == "user":
                     history_lines.append(f"User: {content}")
                 elif role == "assistant":
                     history_lines.append(f"Assistant: {content}")
-            if history_lines:
-                history_text = "\n\n**Recent Conversation:**\n" + "\n".join(history_lines) + "\n"
 
-        full_prompt = f"{context_note}{summary_text}\n\n**User Question:** {question}{history_text}\n\n**Retrieved Data:**\n{context or 'None'}"
+            if history_lines:
+                history_text = "\n\n**Recent Conversation:**\n" + "\n".join(history_lines)
+            else:
+                summary = self._build_history_summary(conversation_history)
+                if summary:
+                    history_text = f"\n\n**Conversation Summary:** {summary}"
+
+        full_prompt = (
+            f"{context_note}{history_text}\n\n"
+            f"**User Question:** {question}\n\n"
+            f"**Retrieved Data:**\n{context or 'None'}"
+        )
 
         logger.info(f"Generating response for question: {question[:100]}... with {num_sources} sources")
 
