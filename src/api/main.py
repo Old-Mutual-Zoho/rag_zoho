@@ -360,6 +360,36 @@ class MotorPrivateFullFormResponse(BaseModel):
     breakdown: Dict[str, Any]
 
 
+class TravelInsuranceFullFormRequest(BaseModel):
+    """Submit the full Travel Insurance form in a single payload (no guided steps)."""
+
+    user_id: str = Field(..., description="External user identifier (e.g. phone number)")
+    data: Dict[str, Any] = Field(..., description="Flattened form fields for Travel Insurance application")
+
+
+class TravelInsuranceFullFormResponse(BaseModel):
+    quote_id: str
+    product_name: str
+    total_premium_ugx: float
+    total_premium_usd: float
+    breakdown: Dict[str, Any]
+
+
+class SerenicareFullFormRequest(BaseModel):
+    """Submit the full Serenicare form in a single payload (no guided steps)."""
+
+    user_id: str = Field(..., description="External user identifier (e.g. phone number)")
+    data: Dict[str, Any] = Field(..., description="Flattened form fields for Serenicare application")
+
+
+class SerenicareFullFormResponse(BaseModel):
+    quote_id: str
+    product_name: str
+    monthly_premium: float
+    annual_premium: float
+    breakdown: Dict[str, Any]
+
+
 class CreateSessionRequest(BaseModel):
     """Create a new chatbot session (e.g. when user opens the app)."""
 
@@ -1418,18 +1448,44 @@ async def submit_personal_accident_full_form(
             "product_id": "personal_accident",
         }
 
+        # Normalize the flattened full-form payload into the same shape expected
+        # by the guided-flow validators, without creating a draft quote first.
+        quick_quote: Dict[str, Any] = {
+            "first_name": payload.get("first_name") or payload.get("firstName", ""),
+            "last_name": payload.get("surname") or payload.get("lastName", ""),
+            "middle_name": payload.get("middle_name") or payload.get("middleName", ""),
+            "email": payload.get("email", ""),
+            "mobile": payload.get("mobile") or payload.get("mobile_number", ""),
+            "dob": payload.get("dob"),
+            "policy_start_date": payload.get("policyStartDate") or payload.get("policy_start_date"),
+            "cover_limit_ugx": int(payload.get("coverLimitAmountUgx") or payload.get("cover_limit_amount_ugx") or 10_000_000),
+        }
+        data["quick_quote"] = quick_quote
+
         # Run each logical step's validation + data shaping.
+        await flow._step_quick_quote(
+            {
+                "firstName": quick_quote["first_name"],
+                "lastName": quick_quote["last_name"],
+                "middleName": quick_quote["middle_name"],
+                "mobile": quick_quote["mobile"],
+                "email": quick_quote["email"],
+                "dob": quick_quote["dob"],
+                "policyStartDate": quick_quote["policy_start_date"],
+                "coverLimitAmountUgx": str(quick_quote["cover_limit_ugx"]),
+            },
+            data,
+            internal_user_id,
+        )
         await flow._step_personal_details(payload, data, internal_user_id)
         await flow._step_next_of_kin(payload, data, internal_user_id)
         await flow._step_previous_pa_policy(payload, data, internal_user_id)
         await flow._step_physical_disability(payload, data, internal_user_id)
         await flow._step_risky_activities(payload, data, internal_user_id)
-        await flow._step_coverage_selection(payload, data, internal_user_id)
         await flow._step_upload_national_id(payload, data, internal_user_id)
 
         # Calculate premium using the same helper as the guided flow.
-        plan = data.get("coverage_plan") or {}
-        sum_assured = plan.get("sum_assured", 10_000_000)
+        sum_assured = int((data.get("quick_quote") or {}).get("cover_limit_ugx", 10_000_000))
         premium = flow._calculate_pa_premium(data, sum_assured)
 
         # Persist a quote once, with all underwriting data collected at once.
@@ -1479,7 +1535,7 @@ async def submit_motor_private_full_form(
     from src.chatbot.controllers.motor_private_controller import MotorPrivateController
 
     try:
-        controller = MotorPrivateController(db, product_matcher)
+        controller = MotorPrivateController(db)
         result = await controller.submit_full_form(body.user_id, body.data or {})
 
         return MotorPrivateFullFormResponse(
@@ -1501,6 +1557,143 @@ async def submit_motor_private_full_form(
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         logger.error(f"Error submitting Motor Private full form: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/forms/travel-insurance/full", response_model=TravelInsuranceFullFormResponse, tags=["Forms"])
+async def submit_travel_insurance_full_form(
+    body: TravelInsuranceFullFormRequest,
+    db: PostgresDB = Depends(get_db),
+):
+    """
+    Accept the entire Travel Insurance application in one payload and create a quote.
+
+    Runs all server-side field validations via TravelInsuranceController then
+    calculates the premium and persists a quote record.
+    """
+    from src.chatbot.controllers.travel_insurance_controller import TravelInsuranceController
+    from src.integrations.policy.premium import premium_service
+
+    try:
+        user = db.get_or_create_user(phone_number=body.user_id)
+        internal_user_id = str(user.id)
+
+        controller = TravelInsuranceController(db)
+        payload: Dict[str, Any] = dict(body.data or {})
+
+        app = controller.create_application(internal_user_id, {})
+        app_id = app["id"]
+
+        # Validate each section via the controller (raises FormValidationError on bad input)
+        controller.update_about_you(app_id, payload)
+        controller.update_travel_party_and_trip(app_id, payload)
+        controller.update_data_consent(app_id, payload)
+        controller.update_traveller_details(app_id, payload)
+
+        # Optional sections — only validate if the client included relevant fields
+        if any(k in payload for k in ("ec_surname", "ec_relationship", "ec_phone_number", "ec_email")):
+            controller.update_emergency_contact(app_id, payload)
+        if any(k in payload for k in ("bank_name", "account_holder_name", "account_number")):
+            controller.update_bank_details(app_id, payload)
+
+        # Build the data dict that the premium calculator expects
+        data: Dict[str, Any] = {
+            "selected_product": payload.get("selected_product") or {"id": payload.get("product_id", "worldwide_essential")},
+            "travel_party_and_trip": {
+                "travel_party": payload.get("travel_party"),
+                "num_travellers_18_69": payload.get("num_travellers_18_69", 1),
+                "num_travellers_0_17": payload.get("num_travellers_0_17", 0),
+                "num_travellers_70_75": payload.get("num_travellers_70_75", 0),
+                "num_travellers_76_80": payload.get("num_travellers_76_80", 0),
+                "num_travellers_81_85": payload.get("num_travellers_81_85", 0),
+                "departure_date": payload.get("departure_date"),
+                "return_date": payload.get("return_date"),
+                "departure_country": payload.get("departure_country"),
+                "destination_country": payload.get("destination_country"),
+            },
+        }
+        pricing = premium_service.calculate_sync("travel_insurance", {"data": data})
+
+        result = controller.finalize_and_create_quote(app_id, internal_user_id, pricing)
+        quote_id = (result or {}).get("quote_id") or ""
+
+        return TravelInsuranceFullFormResponse(
+            quote_id=quote_id,
+            product_name=(data["selected_product"] or {}).get("label", "Travel Insurance"),
+            total_premium_ugx=pricing["total_ugx"],
+            total_premium_usd=pricing["total_usd"],
+            breakdown=pricing.get("breakdown", {}),
+        )
+    except FormValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "validation_error",
+                "message": e.message,
+                "field_errors": e.field_errors,
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error submitting Travel Insurance full form: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.post("/forms/serenicare/full", response_model=SerenicareFullFormResponse, tags=["Forms"])
+async def submit_serenicare_full_form(
+    body: SerenicareFullFormRequest,
+    db: PostgresDB = Depends(get_db),
+):
+    """
+    Accept the entire Serenicare application in one payload and create a quote.
+
+    Runs all server-side field validations via SerenicareController then
+    calculates the premium and persists a quote record.
+    """
+    from src.chatbot.controllers.serenicare_controller import SerenicareController
+    from src.integrations.policy.premium import premium_service
+
+    try:
+        user = db.get_or_create_user(phone_number=body.user_id)
+        internal_user_id = str(user.id)
+
+        controller = SerenicareController(db)
+        payload: Dict[str, Any] = dict(body.data or {})
+
+        app = controller.create_application(internal_user_id, {})
+        app_id = app["id"]
+
+        # Validate each section (raises FormValidationError on bad input)
+        controller.update_about_you(app_id, payload)
+        controller.update_plan_selection(app_id, payload)
+        controller.update_optional_benefits(app_id, payload)
+        controller.update_medical_conditions(app_id, payload)
+        controller.update_cover_personalization(app_id, payload)
+
+        # Determine selected plan for premium calculation
+        plan = {"id": payload.get("plan_option", "essential")}
+        pricing = premium_service.calculate_sync("serenicare", {"data": payload, "plan": plan})
+
+        result = controller.finalize_and_create_quote(app_id, internal_user_id, pricing)
+        quote_id = (result or {}).get("quote_id") or ""
+
+        return SerenicareFullFormResponse(
+            quote_id=quote_id,
+            product_name="Serenicare",
+            monthly_premium=pricing["monthly"],
+            annual_premium=pricing["annual"],
+            breakdown=pricing.get("breakdown", {}),
+        )
+    except FormValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "validation_error",
+                "message": e.message,
+                "field_errors": e.field_errors,
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error submitting Serenicare full form: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
