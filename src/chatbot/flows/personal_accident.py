@@ -147,6 +147,17 @@ class PersonalAccidentFlow:
         errors: Dict[str, str] = {}
 
         if payload and "_raw" not in payload:
+            # Run shared step-level validation first so field rules (including DOB)
+            # are enforced consistently across flows/endpoints.
+            errors.update(
+                StepValidator.validate(
+                    "personal_accident",
+                    "quick_quote",
+                    payload,
+                    context=data,
+                )
+            )
+
             # Frontend-style field names
             first_name = require_str(payload, "firstName", errors, label="First Name")
             last_name = require_str(payload, "lastName", errors, label="Last Name")
@@ -247,6 +258,14 @@ class PersonalAccidentFlow:
                 "defaultValue": prefilled.get("first_name", ""),
             },
             {
+                "name": "middleName",
+                "label": "Middle Name",
+                "type": "text",
+                "required": False,
+                "maxLength": 50,
+                "defaultValue": prefilled.get("middle_name", ""),
+            },
+            {
                 "name": "lastName",
                 "label": "Last Name",
                 "type": "text",
@@ -254,14 +273,6 @@ class PersonalAccidentFlow:
                 "minLength": 2,
                 "maxLength": 50,
                 "defaultValue": prefilled.get("last_name", ""),
-            },
-            {
-                "name": "middleName",
-                "label": "Middle Name",
-                "type": "text",
-                "required": False,
-                "maxLength": 50,
-                "defaultValue": prefilled.get("middle_name", ""),
             },
             {
                 "name": "mobile",
@@ -601,7 +612,6 @@ class PersonalAccidentFlow:
         if payload and "_raw" not in payload:
             first_name = require_str(payload, "nok_first_name", errors, label="First Name")
             last_name = require_str(payload, "nok_last_name", errors, label="Last Name")
-            middle_name = optional_str(payload, "nok_middle_name")
             middle_name = optional_str(payload, "nok_middle_name")
             phone_number = validate_phone_ug(payload.get("nok_phone_number", ""), errors, field="nok_phone_number")
             relationship = require_str(payload, "nok_relationship", errors, label="Relationship")

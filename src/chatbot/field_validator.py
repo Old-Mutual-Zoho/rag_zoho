@@ -409,7 +409,7 @@ class StepValidator:
         handler = cls._REGISTRY.get((product_id, step))
         if not handler:
             return {}
-        return handler(payload, context)
+        return handler(cls, payload, context)
 
     @classmethod
     def _validate_fields(
@@ -610,8 +610,12 @@ class FieldDecorator:
         name = f.get("name", "")
         ftype = f.get("type", "text")
 
-        # backend validation flag
-        f["backendValidation"] = FieldValidator.requires_backend(name)
+        # backend validation flag + UX hints for per-field progression control.
+        backend_validation = FieldValidator.requires_backend(name)
+        f["backendValidation"] = backend_validation
+        if backend_validation:
+            f.setdefault("validateOn", "blur")
+            f.setdefault("blockNextUntilValid", True)
 
         # inline error
         if name in errors:
