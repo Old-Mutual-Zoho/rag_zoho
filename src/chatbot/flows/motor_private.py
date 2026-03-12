@@ -61,10 +61,6 @@ MOTOR_PRIVATE_ADDITIONAL_BENEFITS = [
     }
 ]
 
-# MOTOR_PRIVATE_BENEFITS has been moved to product_json/motor_private_config.json
-# and is now loaded dynamically via product_benefits_loader
-
-
 class MotorPrivateFlow:
     """
     Guided flow for Motor Private.
@@ -74,10 +70,8 @@ class MotorPrivateFlow:
         1 - vehicle_details
         2 - excess_parameters
         3 - additional_benefits
-        4 - benefits_summary
-        5 - premium_calculation
-        6 - premium_and_download
-        7 - choose_plan_and_pay
+        4 - premium_calculation
+        5 - choose_plan_and_pay
     """
 
     STEPS = [
@@ -85,10 +79,8 @@ class MotorPrivateFlow:
         "vehicle_details",     # 1
         "excess_parameters",   # 2
         "additional_benefits",  # 3
-        "benefits_summary",    # 4
-        "premium_calculation",  # 5
-        "premium_and_download",  # 6
-        "choose_plan_and_pay",  # 7
+        "premium_calculation",  # 4
+        "choose_plan_and_pay",  # 5
     ]
 
     def __init__(self, product_catalog, db):
@@ -466,9 +458,7 @@ class MotorPrivateFlow:
             self._step_vehicle_details,
             self._step_excess_parameters,
             self._step_additional_benefits,
-            self._step_benefits_summary,
             self._step_premium_calculation,
-            self._step_premium_and_download,
             self._step_choose_plan_and_pay,
         ]
         result = {}
@@ -513,10 +503,8 @@ class MotorPrivateFlow:
             1: self._step_vehicle_details,
             2: self._step_excess_parameters,
             3: self._step_additional_benefits,
-            4: self._step_benefits_summary,
-            5: self._step_premium_calculation,
-            6: self._step_premium_and_download,
-            7: self._step_choose_plan_and_pay,
+            4: self._step_premium_calculation,
+            5: self._step_choose_plan_and_pay,
         }
         handler = handlers.get(current_step)
         if handler is None:
@@ -873,7 +861,7 @@ class MotorPrivateFlow:
                 if not cleaned:
                     raise_if_errors({"additional_benefits": "Please select at least one additional benefit."})
                 data["additional_benefits"] = cleaned
-                out = await self._step_benefits_summary({}, data, user_id)
+                out = await self._step_premium_calculation({}, data, user_id)
                 out["next_step"] = 4
                 return out
         except Exception as e:
@@ -889,63 +877,37 @@ class MotorPrivateFlow:
                 "options": MOTOR_PRIVATE_ADDITIONAL_BENEFITS,
                 "defaultValue": data.get("additional_benefits", []),
             },
-            "next_step": 4,          # ✅ Correct
+            "next_step": 4,
             "collected_data": data,
         }
 
     # ------------------------------------------------------------------
-    # Step 4 – Benefits Summary
+    # Background helper – load product benefits into data silently
     # ------------------------------------------------------------------
 
-    async def _step_benefits_summary(self, payload: Dict, data: Dict, user_id: str) -> Dict:
-        try:
-            if payload and "_raw" not in payload:
-                out = await self._step_premium_calculation({}, data, user_id)
-                out["next_step"] = 5
-                return out
-        except Exception as e:
-            return {"error": f"Exception in benefits_summary: {str(e)}", "step": "benefits_summary"}
-
-        # Load dynamic benefits from configuration
-        # For motor_private, comprehensive coverage has standard benefits regardless of vehicle value
-        benefits = product_benefits_loader.get_benefits_as_dict("motor_private", 0)
-
-        return {
-            "response": {
-                "type": "benefits_summary",
-                "message": "Benefits",
-                "benefits": benefits,
-            },
-            "next_step": 5,          # ✅ Correct
-            "collected_data": data,
-        }
+    def _load_benefits(self, data: Dict) -> None:
+        """Populate data['benefits'] from product config without showing a UI step."""
+        data["benefits"] = product_benefits_loader.get_benefits_as_dict("motor_private", 0)
 
     # ------------------------------------------------------------------
-    # Step 5 – Premium Calculation
+    # Step 4 – Premium Calculation (display + advance to pay)
     # ------------------------------------------------------------------
 
     async def _step_premium_calculation(self, payload: Dict, data: Dict, user_id: str) -> Dict:
         try:
             if payload and "_raw" not in payload:
-                data["premium_calculation"] = {
-                    "base_premium": payload.get("base_premium", ""),
-                    "training_levy": payload.get("training_levy", ""),
-                    "sticker_fees": payload.get("sticker_fees", ""),
-                    "vat": payload.get("vat", ""),
-                    "stamp_duty": payload.get("stamp_duty", ""),
-                }
-                out = await self._step_premium_and_download({}, data, user_id)
-                out["next_step"] = 6
+                # Any structured submission (action button, etc.) proceeds to payment
+                out = await self._step_choose_plan_and_pay({}, data, user_id)
+                out["next_step"] = 5
                 return out
         except Exception as e:
             return {"error": f"Exception in premium_calculation: {str(e)}", "step": "premium_calculation"}
 
+        # Load benefits silently into data for downstream use (PDF, API, etc.)
+        self._load_benefits(data)
+
         # Calculate premium
         premium = self._calculate_motor_private_premium(data)
-
-        # Load dynamic benefits from configuration
-        # For motor_private, comprehensive coverage has standard benefits regardless of vehicle value
-        benefits = product_benefits_loader.get_benefits_as_dict("motor_private", 0)
 
         # Attempt a non-destructive quotation preview from the underwriting pipeline
         # This is used to display mocked quotation information to the user while
@@ -982,7 +944,6 @@ class MotorPrivateFlow:
                 "message": "Motor Private Premium",
                 "product_name": "Motor Private",
                 "quote_summary": premium,
-                "benefits": benefits,
                 "download_option": True,
                 "download_label": "Download Quote (PDF)",
                 "actions": [
@@ -991,7 +952,7 @@ class MotorPrivateFlow:
                     {"type": "proceed_to_pay", "label": "Proceed to Pay"},
                 ],
             },
-            "next_step": 6,
+            "next_step": 5,
             "collected_data": data,
         }
 
@@ -1002,36 +963,7 @@ class MotorPrivateFlow:
         return resp
 
     # ------------------------------------------------------------------
-    # Step 6 – Premium & Download
-    # ------------------------------------------------------------------
-
-    async def _step_premium_and_download(self, payload: Dict, data: Dict, user_id: str) -> Dict:
-        try:
-            premium = self._calculate_motor_private_premium(data)
-            if payload and "_raw" not in payload:
-                out = await self._step_choose_plan_and_pay({}, data, user_id)
-                out["next_step"] = 7
-                return out
-        except Exception as e:
-            return {"error": f"Exception in premium_and_download: {str(e)}", "step": "premium_and_download"}
-
-        return {
-            "response": {
-                "type": "premium_summary",
-                "message": "Premium Calculation",
-                "quote_summary": premium,
-                "actions": [
-                    {"type": "edit", "label": "Edit"},
-                    {"type": "download_quote", "label": "Download Quote"},
-                    {"type": "proceed_to_pay", "label": "Proceed to Pay"},
-                ],
-            },
-            "next_step": 7,          # ✅ Correct
-            "collected_data": data,
-        }
-
-    # ------------------------------------------------------------------
-    # Step 7 – Choose Plan & Pay
+    # Step 5 – Choose Plan & Pay
     # ------------------------------------------------------------------
 
     async def _step_choose_plan_and_pay(self, payload: Dict, data: Dict, user_id: str) -> Dict:
