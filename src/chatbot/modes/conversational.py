@@ -173,6 +173,58 @@ def _augment_query_with_topic(message: str, topic_name: Optional[str], *, use_to
     return f"{topic_name} {message}".strip()
 
 
+def _is_followup_message(message: str) -> bool:
+    m = (message or "").strip().lower()
+    if not m:
+        return False
+    if _is_greeting(m):
+        return False
+
+    followup_starts = (
+        "and ",
+        "also ",
+        "what about",
+        "how about",
+        "what if",
+        "then ",
+    )
+    if m.startswith(followup_starts):
+        return True
+
+    if re.search(r"\b(it|this|that|they|them|those|these)\b", m):
+        return True
+
+    tokens = re.findall(r"\b[\w']+\b", m)
+    if len(tokens) <= 7 and any(k in m for k in ["waiting period", "limit", "limits", "eligible", "price", "cost", "premium"]):
+        return True
+
+    return False
+
+
+def _last_user_turn(conversation_history: List[Dict[str, Any]]) -> Optional[str]:
+    for msg in reversed(conversation_history or []):
+        role = (msg.get("role") or "").strip().lower()
+        content = (msg.get("content") or "").strip()
+        if role == "user" and content:
+            return content
+    return None
+
+
+def _augment_query_with_history(message: str, conversation_history: List[Dict[str, Any]], *, use_history: bool) -> str:
+    if not use_history:
+        return message
+
+    previous_user_turn = _last_user_turn(conversation_history)
+    if not previous_user_turn:
+        return message
+
+    lowered = message.lower()
+    if previous_user_turn.lower() in lowered:
+        return message
+
+    return f"Context from previous question: {previous_user_turn}. Follow-up question: {message}"
+
+
 def _is_fallback_like_answer(answer: str) -> bool:
     lowered = (answer or "").strip().lower()
     if not lowered:
@@ -490,10 +542,17 @@ class ConversationalMode:
         ctx = dict(session.get("context") or {})
         topic = (ctx.get("product_topic") or {}) if isinstance(ctx, dict) else {}
         should_reuse_topic = _should_reuse_product_topic(message, topic)
-        retrieval_query = _augment_query_with_topic(
+        recent_history = self._get_recent_history(session_id)
+        query_with_topic = _augment_query_with_topic(
             message,
             topic.get("name"),
             use_topic=should_reuse_topic,
+        )
+        should_use_history = _is_followup_message(message) and bool(recent_history) and not _detect_digital_flow(message)
+        retrieval_query = _augment_query_with_history(
+            query_with_topic,
+            recent_history,
+            use_history=should_use_history,
         )
 
         # Build filters for RAG retrieval.
@@ -537,7 +596,7 @@ class ConversationalMode:
         retrieval_results = await self.rag.retrieve(query=retrieval_query, filters=filters or None, top_k=None)
 
         # Generate response
-        response = await self.rag.generate(query=retrieval_query, context_docs=retrieval_results, conversation_history=self._get_recent_history(session_id))
+        response = await self.rag.generate(query=retrieval_query, context_docs=retrieval_results, conversation_history=recent_history)
 
         # ---- Record RAG metrics ----
         confidence = _estimate_response_confidence(response, retrieval_results, products, filters)
@@ -977,14 +1036,24 @@ class ConversationalMode:
         return "How can I help you with Old Mutual products or services today?"
 
     def _get_recent_history(self, session_id: str, limit: int = 5) -> List[Dict]:
-        """Get recent conversation history"""
+        """Get recent conversation history.
+
+        Fast path: reads the rolling ``recent_messages`` buffer stored in the
+        Redis session so follow-up turns never need a PostgreSQL round-trip.
+        Falls back to PostgreSQL on cold start (e.g. after a server restart
+        before the first reply has been saved this session).
+        """
         session = self.state_manager.get_session(session_id)
         if not session:
             return []
 
-        # Get from PostgreSQL
-        messages = self.state_manager.db.get_conversation_history(session["conversation_id"], limit=limit)
+        # Redis cache (fast path)
+        cached = session.get("recent_messages")
+        if cached:
+            return cached[-limit:]
 
+        # Cold-start fallback: read from PostgreSQL
+        messages = self.state_manager.db.get_conversation_history(session["conversation_id"], limit=limit)
         return [{"role": msg.role, "content": msg.content} for msg in reversed(messages)]
 
     def _generate_product_card(self, product: Dict) -> Dict:

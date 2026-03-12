@@ -93,6 +93,11 @@ class FollowUpMatcher:
         return DummyMatcher().match_products(query, top_k=top_k)
 
 
+class NoMatchMatcher:
+    def match_products(self, query: str, top_k: int = 3):
+        return []
+
+
 @pytest.mark.asyncio
 async def test_tell_me_about_travel_insurance_stays_conversational_and_suggests_sections():
     db = PostgresDB()
@@ -283,3 +288,27 @@ async def test_followup_reuses_session_product_topic_for_ambiguous_question():
     second_call = rag.retrieve_calls[-1]
     assert second_call["filters"] == {"products": ["website:product:travel/travel-insurance"]}
     assert "travel insurance" in second_call["query"].lower()
+
+
+@pytest.mark.asyncio
+async def test_followup_uses_previous_user_turn_when_no_product_match():
+    db = PostgresDB()
+    redis = RedisCache()
+    sm = StateManager(redis, db)
+
+    user = db.get_or_create_user(phone_number="256700000006")
+    session_id = sm.create_session(str(user.id))
+    conv = ConversationalMode(DummyRAG(), NoMatchMatcher(), sm)
+
+    session = sm.get_session(session_id)
+    conversation_id = session["conversation_id"]
+    db.add_message(conversation_id=conversation_id, role="user", content="Tell me about travel insurance")
+    db.add_message(conversation_id=conversation_id, role="assistant", content="Travel insurance protects trips.")
+
+    out = await conv.process("what about waiting period?", session_id, str(user.id))
+
+    assert out["mode"] == "conversational"
+    q = conv.rag.retrieve_calls[-1]["query"].lower()
+    assert "context from previous question" in q
+    assert "tell me about travel insurance" in q
+    assert "follow-up question" in q

@@ -1009,7 +1009,7 @@ async def _handle_chat_message(request: ChatMessage, router: ChatRouter, db: Pos
             response["forwarded_to_agent"] = False
             response["forward_error"] = str(e)
 
-    # Save message to database
+    # Save message to database and update Redis message cache
     session = state_manager.get_session(session_id)
     if session:
         user_content = json.dumps(request.form_data) if request.form_data else request.message
@@ -1019,6 +1019,10 @@ async def _handle_chat_message(request: ChatMessage, router: ChatRouter, db: Pos
             content=user_content,
             metadata=request.metadata or {},
         )
+        # Build the rolling Redis message buffer
+        cached_messages = list(session.get("recent_messages") or [])
+        cached_messages.append({"role": "user", "content": user_content})
+
         # In escalated mode, avoid storing repeated bot acknowledgements as assistant replies.
         if response.get("mode") != "escalated":
             resp_val = response.get("response")
@@ -1032,6 +1036,11 @@ async def _handle_chat_message(request: ChatMessage, router: ChatRouter, db: Pos
                 content=assistant_content,
                 metadata={"mode": response.get("mode")},
             )
+            cached_messages.append({"role": "assistant", "content": assistant_content})
+
+        # Persist last 10 messages (5 turns) back to Redis so follow-up turns
+        # can read history without hitting PostgreSQL.
+        state_manager.update_session(session_id, {"recent_messages": cached_messages[-10:]})
 
     return ChatResponse(response=response, session_id=session_id, mode=response.get("mode", "conversational"), timestamp=datetime.now().isoformat())
 
