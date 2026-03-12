@@ -236,15 +236,15 @@ class MiaGenerator:
 
         logger.info(f"Generating response for question: {question[:100]}... with {num_sources} sources")
 
-        def _sync_generate():
+        def _sync_generate(prompt: str, max_output_tokens: int = 800):
             from google.genai import types
             response = self.client.models.generate_content(
                 model=MODEL_NAME,
-                contents=full_prompt,
+                contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
                     temperature=self.temperature,
-                    max_output_tokens=800,
+                    max_output_tokens=max_output_tokens,
                 ),
             )
             return response
@@ -252,11 +252,29 @@ class MiaGenerator:
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
-                response = await asyncio.to_thread(_sync_generate)
+                response = await asyncio.to_thread(_sync_generate, full_prompt, 800)
                 text = (getattr(response, "text", "") or "").strip()
                 if not text:
                     logger.warning("GenAI returned empty text response.")
                     return "I'm having trouble retrieving those details right now. Please try again in a moment."
+
+                # Some provider-side stops can return partial text. If we detect an
+                # abrupt ending, ask for a short continuation and stitch it in.
+                if self._looks_truncated(text):
+                    try:
+                        continuation_prompt = (
+                            "Continue the answer from where it stopped. "
+                            "Do not repeat the text already provided. "
+                            "Finish the incomplete thought in 1-3 short sentences.\n\n"
+                            f"Current partial answer:\n{text}"
+                        )
+                        continuation = await asyncio.to_thread(_sync_generate, continuation_prompt, 240)
+                        continuation_text = (getattr(continuation, "text", "") or "").strip()
+                        if continuation_text:
+                            text = self._merge_continuation(text, continuation_text)
+                    except Exception as continuation_error:
+                        logger.warning("Continuation attempt failed: %s", continuation_error)
+
                 logger.info("Successfully generated response from Gemini API")
                 return text
             except Exception as e:
@@ -274,6 +292,61 @@ class MiaGenerator:
                 await asyncio.sleep(backoff)
 
         return "I'm having trouble retrieving those details right now. Please try again in a moment."
+
+    @staticmethod
+    def _looks_truncated(text: str) -> bool:
+        s = (text or "").strip()
+        if not s:
+            return True
+
+        # Very short replies can naturally end without punctuation.
+        if len(s) < 80:
+            return False
+
+        if s.endswith((".", "!", "?", '"', "'", "*", ")", "]")):
+            return False
+
+        last_word = s.split()[-1].strip(".,!?;:'\")]").lower()
+        dangling_words = {
+            "a", "an", "and", "as", "at", "because", "but", "for",
+            "from", "in", "into", "of", "on", "or", "that", "the",
+            "to", "with", "which",
+        }
+        if last_word in dangling_words:
+            return True
+
+        # Unbalanced markdown bold is a strong signal of a cut-off answer.
+        if s.count("**") % 2 == 1:
+            return True
+
+        return True
+
+    @staticmethod
+    def _merge_continuation(base_text: str, continuation_text: str) -> str:
+        base = (base_text or "").rstrip()
+        cont = (continuation_text or "").strip()
+        if not cont:
+            return base
+
+        if cont.lower() in base.lower():
+            return base
+
+        # Remove simple overlap when continuation starts by repeating the tail.
+        max_overlap = min(80, len(base), len(cont))
+        overlap = 0
+        for size in range(max_overlap, 11, -1):
+            if base[-size:].lower() == cont[:size].lower():
+                overlap = size
+                break
+
+        if overlap > 0:
+            cont = cont[overlap:].lstrip()
+
+        if not cont:
+            return base
+
+        separator = " " if base and base[-1].isalnum() and cont[0].isalnum() else ""
+        return f"{base}{separator}{cont}"
 
 
 def generate_with_gemini(
