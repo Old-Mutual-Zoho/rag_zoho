@@ -98,6 +98,30 @@ class NoMatchMatcher:
         return []
 
 
+class DigitalFlowFallbackMatcher:
+    def __init__(self):
+        self.product_index = {
+            "website:product:other/general/motor-insurance": {
+                "product_id": "website:product:other/general/motor-insurance",
+                "doc_id": "website:product:other/general/motor-insurance",
+                "name": "Motor Insurance",
+                "slug": "motor-insurance",
+                "product_key": "other/general/motor-insurance",
+            },
+            "website:product:business/general/motor-commercial": {
+                "product_id": "website:product:business/general/motor-commercial",
+                "doc_id": "website:product:business/general/motor-commercial",
+                "name": "Motor Commercial",
+                "slug": "motor-commercial",
+                "product_key": "business/general/motor-commercial",
+            },
+        }
+
+    def match_products(self, query: str, top_k: int = 3):
+        # Simulate lexical matching miss for short queries like "Car Insurance".
+        return []
+
+
 @pytest.mark.asyncio
 async def test_tell_me_about_travel_insurance_stays_conversational_and_suggests_sections():
     db = PostgresDB()
@@ -312,3 +336,21 @@ async def test_followup_uses_previous_user_turn_when_no_product_match():
     assert "context from previous question" in q
     assert "tell me about travel insurance" in q
     assert "follow-up question" in q
+
+
+@pytest.mark.asyncio
+async def test_car_insurance_uses_digital_flow_fallback_filter_when_matcher_misses():
+    db = PostgresDB()
+    redis = RedisCache()
+    sm = StateManager(redis, db)
+
+    user = db.get_or_create_user(phone_number="256700000007")
+    session_id = sm.create_session(str(user.id))
+    rag = DummyRAG()
+    conv = ConversationalMode(rag, DigitalFlowFallbackMatcher(), sm)
+
+    out = await conv.process("Car Insurance", session_id, str(user.id))
+
+    assert out["mode"] == "conversational"
+    call = rag.retrieve_calls[-1]
+    assert call["filters"] == {"products": ["website:product:other/general/motor-insurance"]}
