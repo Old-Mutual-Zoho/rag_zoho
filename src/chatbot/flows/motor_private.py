@@ -588,8 +588,7 @@ class MotorPrivateFlow:
                     "car_usage_region",
                     required=True,
                 )
-                if errors:
-                    return {"error": "Validation failed in vehicle_details", "details": errors, "step": "vehicle_details"}
+                raise_if_errors(errors)
                 data["vehicle_details"] = {
                     "vehicle_make": vehicle_make,
                     "year_of_manufacture": str(year),
@@ -606,6 +605,8 @@ class MotorPrivateFlow:
                 out["next_step"] = 2
                 return out
         except Exception as e:
+            if "Please correct" in str(e):
+                raise
             return {"error": f"Exception in vehicle_details: {str(e)}", "step": "vehicle_details"}
 
         return {
@@ -669,12 +670,14 @@ class MotorPrivateFlow:
                 if isinstance(selected, str):
                     selected = [s.strip() for s in selected.split(",") if s.strip()]
                 if not selected:
-                    return {"error": "No excess parameters selected", "step": "excess_parameters"}
+                    raise_if_errors({"excess_choice": "Please select an excess parameter."})
                 data["excess_parameters"] = selected
                 out = await self._step_additional_benefits({}, data, user_id)
                 out["next_step"] = 3
                 return out
         except Exception as e:
+            if "Please correct" in str(e):
+                raise
             return {"error": f"Exception in excess_parameters: {str(e)}", "step": "excess_parameters"}
 
         return {
@@ -698,12 +701,14 @@ class MotorPrivateFlow:
                 if isinstance(selected, str):
                     selected = [s.strip() for s in selected.split(",") if s.strip()]
                 if not selected:
-                    return {"error": "No additional benefits selected", "step": "additional_benefits"}
+                    raise_if_errors({"additional_benefits": "Please select at least one additional benefit."})
                 data["additional_benefits"] = selected
                 out = await self._step_benefits_summary({}, data, user_id)
                 out["next_step"] = 4
                 return out
         except Exception as e:
+            if "Please correct" in str(e):
+                raise
             return {"error": f"Exception in additional_benefits: {str(e)}", "step": "additional_benefits"}
 
         return {
