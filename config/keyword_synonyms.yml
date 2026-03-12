@@ -40,6 +40,13 @@ synonyms:
     - auto insurance
     - motor insurance
 
+  all risks cover:
+    - all risk cover
+    - all risks insurance
+    - item insurance
+    - gadget insurance
+    - item cover
+
 # Category mappings
 categories:
   health:
