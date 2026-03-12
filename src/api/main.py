@@ -274,7 +274,8 @@ class APIRAGAdapter:
 
         stats = _retrieval_stats()
         # If retrieval is weak or empty, avoid LLM and fall back to extractive mode.
-        if not context_docs or stats["avg_score"] < 0.55:
+        # Keep a low threshold so generation still runs when chunks are reasonably relevant.
+        if not context_docs or stats["avg_score"] < 0.2:
             return _extractive_answer()
 
         if self.cfg.generation.backend == "gemini":

@@ -25,7 +25,7 @@ class ResponseProcessor:
     Supports persisting follow-ups into the provided StateManager (session store).
     """
 
-    DEFAULT_CONFIDENCE_THRESHOLD = 0.35
+    DEFAULT_CONFIDENCE_THRESHOLD = 0.2
 
     # Valid single-word insurance-related queries that should not be flagged as incomplete
     VALID_SINGLE_WORDS = {
@@ -127,19 +127,20 @@ class ResponseProcessor:
                     "metadata": {"reason": "incomplete_input"},
                 }
 
-            # Low confidence => fallback
+            # Low confidence => ask a clarification question instead of fallback.
             if confidence is not None and confidence < self.confidence_threshold:
-                logger.info("Low confidence (%.2f) - triggering fallback", confidence)
-                payload = self.fallback_handler.generate_fallback(
-                    user_input,
-                    confidence=confidence,
-                    conversation_state=conversation_state,
-                    session_id=session_id,
-                    user_id=user_id,
-                )
+                logger.info("Low confidence (%.2f) - asking clarification", confidence)
+                question = self.followup_manager.create_clarifying_question(user_input)
                 if self.state_manager and session_id:
-                    self.state_manager.update_session(session_id, {"fallbacks": conversation_state.get("fallbacks", [])})
-                return payload
+                    self.followup_manager.queue_followup_session(session_id, self.state_manager, question)
+                else:
+                    self.followup_manager.queue_followup(conversation_state, question)
+                return {
+                    "message": question,
+                    "follow_up": True,
+                    "fallback": False,
+                    "metadata": {"reason": "low_confidence_clarification", "confidence": confidence},
+                }
 
             # Detect whether model response contains a follow-up question for the user
             if self._contains_follow_up_question(message):

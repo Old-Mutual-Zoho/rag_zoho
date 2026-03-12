@@ -28,12 +28,14 @@ def test_incomplete_input_asks_clarifier(state_manager):
     assert "provide more details" in out["message"].lower()
 
 
-def test_low_confidence_triggers_fallback(state_manager):
+def test_low_confidence_triggers_clarification(state_manager):
     rp = ResponseProcessor(state_manager=state_manager)
     session = {}
     out = rp.process_response(raw_response="I think...", user_input="Tell me about claims", confidence=0.1, conversation_state=session, session_id="s1")
-    assert out["fallback"] is True
-    assert "rephrase" in out["message"].lower() or "connect" in out["message"].lower()
+    assert out["fallback"] is False
+    assert out["follow_up"] is True
+    assert "clarify" in out["message"].lower() or "more details" in out["message"].lower()
+    assert out["metadata"]["reason"] == "low_confidence_clarification"
 
 
 def test_followup_detected_from_model(state_manager):

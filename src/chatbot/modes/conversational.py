@@ -739,9 +739,9 @@ class ConversationalMode:
         # --- Escalation/handover logic ---
         session = self.state_manager.get_session(session_id) or {}
 
-        # If confidence is low, suggest handover button
+        # If confidence is very low, suggest handover button.
         show_handover_button = False
-        if confidence < 0.4:
+        if confidence < 0.2:
             show_handover_button = True
 
         products_matched_names = [p[2]["name"] for p in products] if products else []
