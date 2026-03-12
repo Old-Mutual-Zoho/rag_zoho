@@ -609,51 +609,98 @@ class MotorPrivateFlow:
                 raise
             return {"error": f"Exception in vehicle_details: {str(e)}", "step": "vehicle_details"}
 
+        prefilled = data.get("vehicle_details", {})
+        fields = [
+            {
+                "name": "vehicle_make",
+                "label": "Choose vehicle make",
+                "type": "select",
+                "required": True,
+                "defaultValue": (payload or {}).get("vehicle_make", prefilled.get("vehicle_make", "")),
+                "options": [
+                    "Toyota", "Nissan", "Honda", "Subaru", "Suzuki",
+                    "Mazda", "Mitsubishi", "Isuzu", "Ford", "Hyundai",
+                    "Kia", "Volkswagen", "Mercedes-Benz", "BMW",
+                    "Peugeot", "Renault", "Other"
+                ],
+            },
+            {
+                "name": "year_of_manufacture",
+                "label": "Year of manufacture",
+                "type": "text",
+                "required": True,
+                "defaultValue": (payload or {}).get("year_of_manufacture", prefilled.get("year_of_manufacture", "")),
+            },
+            {
+                "name": "cover_start_date",
+                "label": "Cover start date",
+                "type": "date",
+                "required": True,
+                "defaultValue": (payload or {}).get("cover_start_date", prefilled.get("cover_start_date", "")),
+            },
+            {
+                "name": "rare_model",
+                "label": "Is the car a rare model?",
+                "type": "radio",
+                "options": ["Yes", "No"],
+                "required": True,
+                "defaultValue": (payload or {}).get("rare_model", prefilled.get("rare_model", "")),
+            },
+            {
+                "name": "valuation_done",
+                "label": "Has the vehicle undergone valuation?",
+                "type": "radio",
+                "options": ["Yes", "No"],
+                "required": True,
+                "defaultValue": (payload or {}).get("valuation_done", prefilled.get("valuation_done", "")),
+            },
+            {
+                "name": "vehicle_value",
+                "label": "Value of Vehicle (UGX)",
+                "type": "number",
+                "required": True,
+                "defaultValue": (payload or {}).get("vehicle_value", prefilled.get("vehicle_value", "")),
+            },
+            {
+                "name": "first_time_registration",
+                "label": "First time this vehicle is registered for this type of insurance?",
+                "type": "radio",
+                "options": ["Yes", "No"],
+                "required": True,
+                "defaultValue": (payload or {}).get("first_time_registration", prefilled.get("first_time_registration", "")),
+            },
+            {
+                "name": "car_alarm_installed",
+                "label": "Do you have a car alarm installed?",
+                "type": "radio",
+                "options": ["Yes", "No"],
+                "required": True,
+                "defaultValue": (payload or {}).get("car_alarm_installed", prefilled.get("car_alarm_installed", "")),
+            },
+            {
+                "name": "tracking_system_installed",
+                "label": "Do you have a tracking system installed?",
+                "type": "radio",
+                "options": ["Yes", "No"],
+                "required": True,
+                "defaultValue": (payload or {}).get("tracking_system_installed", prefilled.get("tracking_system_installed", "")),
+            },
+            {
+                "name": "car_usage_region",
+                "label": "Car usage: within Uganda, East Africa, or outside East Africa?",
+                "type": "radio",
+                "options": ["Within Uganda", "Within East Africa", "Outside East Africa"],
+                "required": True,
+                "defaultValue": (payload or {}).get("car_usage_region", prefilled.get("car_usage_region", "")),
+            },
+        ]
+        fields_with_validation = FieldDecorator.decorate(fields, errors=errors)
+
         return {
             "response": {
                 "type": "form",
                 "message": "Premium Calculation - Vehicle Details",
-                "fields": [
-                    {
-                        "name": "vehicle_make",
-                        "label": "Choose vehicle make",
-                        "type": "select",
-                        "required": True,
-                        "options": [
-                            "Toyota", "Nissan", "Honda", "Subaru", "Suzuki",
-                            "Mazda", "Mitsubishi", "Isuzu", "Ford", "Hyundai",
-                            "Kia", "Volkswagen", "Mercedes-Benz", "BMW",
-                            "Peugeot", "Renault", "Other"
-                        ],
-                    },
-                    {"name": "year_of_manufacture", "label": "Year of manufacture", "type": "text", "required": True},
-                    {"name": "cover_start_date", "label": "Cover start date", "type": "date", "required": True},
-                    {"name": "rare_model", "label": "Is the car a rare model?", "type": "radio", "options": ["Yes", "No"], "required": True},
-                    {"name": "valuation_done", "label": "Has the vehicle undergone valuation?", "type": "radio", "options": ["Yes", "No"], "required": True},
-                    {"name": "vehicle_value", "label": "Value of Vehicle (UGX)", "type": "number", "required": True},
-                    {
-                        "name": "first_time_registration",
-                        "label": "First time this vehicle is registered for this type of insurance?",
-                        "type": "radio",
-                        "options": ["Yes", "No"],
-                        "required": True,
-                    },
-                    {"name": "car_alarm_installed", "label": "Do you have a car alarm installed?", "type": "radio", "options": ["Yes", "No"], "required": True},
-                    {
-                        "name": "tracking_system_installed",
-                        "label": "Do you have a tracking system installed?",
-                        "type": "radio",
-                        "options": ["Yes", "No"],
-                        "required": True,
-                    },
-                    {
-                        "name": "car_usage_region",
-                        "label": "Car usage: within Uganda, East Africa, or outside East Africa?",
-                        "type": "radio",
-                        "options": ["Within Uganda", "Within East Africa", "Outside East Africa"],
-                        "required": True,
-                    },
-                ],
+                "fields": fields_with_validation,
             },
             "next_step": 2,          # ✅ Fixed: was incorrectly 1
             "collected_data": data,
