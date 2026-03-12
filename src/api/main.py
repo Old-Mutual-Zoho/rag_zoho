@@ -646,10 +646,10 @@ async def get_ai_performance_metrics(
 
     top_metrics = [
         {
-            "label": "AI Accuracy Score",
-            "value": _fmt_pct(current["accuracy"]),
-            "delta": _fmt_delta(_delta(current["accuracy"], previous["accuracy"])),
-            "tone": "positive" if current["accuracy"] >= previous["accuracy"] else "negative",
+            "label": "AI Accuracy (Rated)",
+            "value": _fmt_pct(rated_accuracy_current),
+            "delta": _fmt_delta(rated_accuracy_delta),
+            "tone": "positive" if rated_accuracy_current >= rated_accuracy_prev else "negative",
         },
         {
             "label": "AI Resolution Rate",
@@ -744,12 +744,35 @@ async def get_ai_performance_metrics(
     csat_previous = _avg([v for v in csat_prev_vals if v > 0])
     csat_delta = round(csat_current - csat_previous, 2)
 
-    quality_metrics.append(
-        {
-            "label": "User CSAT",
-            "value": f"{csat_current:.1f}/5" if csat_current > 0 else "N/A",
-            "change": f"{csat_delta:+.1f}" if csat_current > 0 else "0",
-        }
+    # Rated accuracy (proxy): ratings 4-5 are treated as "accurate"
+    rated_threshold = 4
+    rated_current = [v for v in csat_current_vals if v > 0]
+    rated_prev = [v for v in csat_prev_vals if v > 0]
+    rated_current_correct = len([v for v in rated_current if v >= rated_threshold])
+    rated_prev_correct = len([v for v in rated_prev if v >= rated_threshold])
+    rated_accuracy_current = _rate(rated_current_correct, len(rated_current))
+    rated_accuracy_prev = _rate(rated_prev_correct, len(rated_prev))
+    rated_accuracy_delta = _delta(rated_accuracy_current, rated_accuracy_prev)
+    rated_coverage = _rate(len(rated_current), current["conversations"])
+
+    quality_metrics.extend(
+        [
+            {
+                "label": "User CSAT",
+                "value": f"{csat_current:.1f}/5" if csat_current > 0 else "N/A",
+                "change": f"{csat_delta:+.1f}" if csat_current > 0 else "0",
+            },
+            {
+                "label": "Accuracy Coverage",
+                "value": _fmt_pct(rated_coverage),
+                "change": _fmt_delta(0.0, 0),
+            },
+            {
+                "label": "Rated Samples",
+                "value": _format_count(len(rated_current)),
+                "change": _fmt_delta(0.0, 0),
+            },
+        ]
     )
 
     # Intent recognition performance
@@ -927,6 +950,10 @@ async def get_ai_performance_metrics(
 
     return {
         "topMetrics": top_metrics,
+        "accuracyRatedMeta": {
+            "coverage": _fmt_pct(rated_coverage),
+            "samples": _format_count(len(rated_current)),
+        },
         "trendData": trend_data,
         "qualityMetrics": quality_metrics,
         "intentRows": intent_rows,
