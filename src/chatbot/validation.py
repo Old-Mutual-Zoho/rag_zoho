@@ -165,7 +165,8 @@ def validate_phone_ug(value: str, errors: Dict[str, str], field: str = "phone_nu
     return raw
 
 
-_NIN_RE = re.compile(r"^[A-Z]{2}\d{12}$")
+# Accept both modern and legacy NIN variants used by existing clients.
+_NIN_RE = re.compile(r"^(?:[A-Z]{2}\d{12}|[A-Z]{2}\d{10}[A-Z]{2})$")
 
 
 def normalize_nin(value: str) -> str:
@@ -181,7 +182,7 @@ def validate_nin_ug(value: str, errors: Dict[str, str], field: str = "national_i
         return raw
     nin = normalize_nin(raw)
     if not _NIN_RE.match(nin):
-        add_error(errors, field, "NIN format is not valid (expected 2 letters + 12 digits)")
+        add_error(errors, field, "NIN format is not valid")
     return raw
 
 
