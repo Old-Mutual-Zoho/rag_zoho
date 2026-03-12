@@ -193,3 +193,18 @@ async def test_no_nin_required_for_motor_frontend_flow(motor_flow):
 
     result = await motor_flow.complete_flow(payload, user_id="user123")
     assert result.get("status") == "success"
+
+
+@pytest.mark.asyncio
+async def test_vehicle_details_form_exposes_backend_validation_metadata(motor_flow):
+    """Guided vehicle-details form should advertise backend validation for date/number fields."""
+
+    result = await motor_flow._step_vehicle_details({}, {}, user_id="user123")
+    fields = result["response"]["fields"]
+    by_name = {field["name"]: field for field in fields}
+
+    assert by_name["cover_start_date"]["backendValidation"] is True
+    assert by_name["cover_start_date"]["type"] == "date"
+    assert "validation" in by_name["cover_start_date"]
+    assert by_name["vehicle_value"]["backendValidation"] is True
+    assert by_name["year_of_manufacture"]["backendValidation"] is False
