@@ -20,7 +20,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from src.chatbot.validation import FormValidationError  # noqa: E402
+from src.chatbot.validation import FormValidationError, parse_date_flexible  # noqa: E402
 from src.chatbot.flows.personal_accident import PersonalAccidentFlow  # noqa: E402
 
 
@@ -85,6 +85,12 @@ async def test_quick_quote_invalid_cover_limit_raises(flow):
         await flow._step_quick_quote(payload, {}, "user-1")
     err = exc.value.field_errors
     assert "coverLimitAmountUgx" in err
+
+
+def test_parse_date_flexible_accepts_personal_accident_formats():
+    assert parse_date_flexible("1990-01-15") == date(1990, 1, 15)
+    assert parse_date_flexible("1990-01-15T00:00:00") == date(1990, 1, 15)
+    assert parse_date_flexible("01/15/1990") == date(1990, 1, 15)
 
 
 @pytest.mark.asyncio

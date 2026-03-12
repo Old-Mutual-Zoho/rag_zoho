@@ -179,6 +179,17 @@ async def test_vehicle_and_premium_field_rules(motor_flow):
 
 
 @pytest.mark.asyncio
+async def test_cover_start_date_accepts_iso_datetime_string(motor_flow):
+    """Frontend may submit ISO datetime strings for date inputs; these should still validate."""
+
+    payload = _valid_motor_frontend_payload()
+    payload["coverStartDate"] = f"{payload['coverStartDate']}T00:00:00"
+
+    result = await motor_flow.complete_flow(payload, user_id="user123")
+    assert result.get("status") == "success"
+
+
+@pytest.mark.asyncio
 async def test_no_nin_required_for_motor_frontend_flow(motor_flow):
     """Motor front-end flow must *not* require or mention NIN / national_id_number."""
 
