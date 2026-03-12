@@ -61,13 +61,10 @@ class MotorPrivateController:
     def delete_application(self, app_id: str) -> bool:
         return self.db.delete_motor_private_application(app_id)
 
-    def update_motor_private_form(self, app_id: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """
-        Update Motor Private application with full form payload and validate all fields.
-        """
+    def _validate_motor_private_form(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and normalize the full Motor Private payload."""
         errors: Dict[str, str] = {}
 
-        # Step 2: Personal Details
         first_name = validate_length_range(
             payload.get("firstName", ""),
             field="firstName",
@@ -75,7 +72,7 @@ class MotorPrivateController:
             label="First Name",
             min_len=2,
             max_len=50,
-            required=True
+            required=True,
         )
         middle_name = validate_length_range(
             payload.get("middleName", ""),
@@ -84,7 +81,7 @@ class MotorPrivateController:
             label="Middle Name",
             min_len=0,
             max_len=50,
-            required=False
+            required=False,
         )
         surname = validate_length_range(
             payload.get("surname", ""),
@@ -93,68 +90,67 @@ class MotorPrivateController:
             label="Surname",
             min_len=2,
             max_len=50,
-            required=True
+            required=True,
         )
         _, mobile = validate_uganda_mobile_frontend(payload.get("mobile", ""), errors, field="mobile")
         email = validate_motor_email_frontend(payload.get("email", ""), errors, field="email")
 
-        # Step 1: Get A Quote
         cover_type = validate_enum(
             payload.get("coverType", ""),
             field="coverType",
             errors=errors,
             allowed=["comprehensive", "third_party"],
             required=True,
-            message="Please select a cover type."
+            message="Please select a cover type.",
         )
-        # Step 3: Premium Calculation
         vehicle_make = validate_enum(
             payload.get("vehicleMake", ""),
             field="vehicleMake",
             errors=errors,
-            allowed=self.db.get_vehicle_make_options(),
+            allowed=self.get_vehicle_make_options(),
             required=True,
-            message="Please select a valid vehicle make."
+            message="Please select a valid vehicle make.",
         )
-        # yearOfManufacture
+
         year_of_manufacture = payload.get("yearOfManufacture")
         try:
             year_of_manufacture = int(year_of_manufacture)
             from datetime import date
+
             current_year = date.today().year
             if not (1980 <= year_of_manufacture <= current_year + 1):
                 errors["yearOfManufacture"] = "Year of manufacture must be between 1980 and next year."
         except Exception:
             errors["yearOfManufacture"] = "Year of manufacture must be a valid integer."
-        # coverStartDate
+
         cover_start_date = payload.get("coverStartDate", "")
         try:
             from datetime import datetime, timedelta
+
             cover_date = datetime.fromisoformat(cover_start_date)
             today = datetime.now().date()
             if not (today <= cover_date.date() <= today + timedelta(days=90)):
                 errors["coverStartDate"] = "Cover start date must be within the next 90 days."
         except Exception:
             errors["coverStartDate"] = "Cover start date must be a valid date (YYYY-MM-DD)."
-        # isRareModel
+
         is_rare_model = validate_enum(
             payload.get("isRareModel", ""),
             field="isRareModel",
             errors=errors,
             allowed=["yes", "no"],
             required=True,
-            message="Please select if the vehicle is a rare model."
+            message="Please select if the vehicle is a rare model.",
         )
-        # hasUndergoneValuation
         has_undergone_valuation = validate_enum(
             payload.get("hasUndergoneValuation", ""),
             field="hasUndergoneValuation",
             errors=errors,
             allowed=["yes", "no"],
             required=True,
-            message="Please indicate if the vehicle has undergone valuation."
+            message="Please indicate if the vehicle has undergone valuation.",
         )
-        # vehicleValueUgx
+
         vehicle_value_ugx = payload.get("vehicleValueUgx")
         try:
             vehicle_value_ugx = float(vehicle_value_ugx)
@@ -162,8 +158,9 @@ class MotorPrivateController:
                 errors["vehicleValueUgx"] = "Vehicle value must be a positive number."
         except Exception:
             errors["vehicleValueUgx"] = "Vehicle value must be a positive number."
+
         raise_if_errors(errors)
-        updates = {
+        return {
             "cover_type": cover_type,
             "first_name": first_name,
             "middle_name": middle_name,
@@ -177,8 +174,67 @@ class MotorPrivateController:
             "has_undergone_valuation": has_undergone_valuation,
             "vehicle_value_ugx": vehicle_value_ugx,
         }
+
+    def update_motor_private_form(self, app_id: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Update Motor Private application with full form payload and validate all fields.
+        """
+        updates = self._validate_motor_private_form(payload)
         app = self.db.update_motor_private_application(app_id, updates)
         return self._to_dict(app) if app else None
+
+    async def submit_full_form(self, user_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate the full Motor Private form, calculate premium, and persist a quote."""
+        from src.integrations.policy.premium import premium_service
+
+        # Resolve external identifier to internal user
+        user = self.db.get_or_create_user(phone_number=user_id)
+        internal_user_id = str(user.id)
+
+        # Validate the full form in a backend-agnostic way. Persist an application
+        # record only when the active DB implementation supports it.
+        validated = self._validate_motor_private_form(payload)
+
+        app_id = None
+        if hasattr(self.db, "create_motor_private_application") and hasattr(self.db, "update_motor_private_application"):
+            app_data = self.create_application(internal_user_id, {})
+            app_id = app_data["id"]
+            self.db.update_motor_private_application(app_id, validated)
+
+        # Build the data dict expected by the premium calculator
+        data = {
+            "cover_type": validated["cover_type"],
+            "vehicle_make": validated["vehicle_make"],
+            "year_of_manufacture": validated["year_of_manufacture"],
+            "vehicle_value_ugx": validated["vehicle_value_ugx"],
+            "is_rare_model": validated["is_rare_model"],
+            "has_undergone_valuation": validated["has_undergone_valuation"],
+            "first_name": validated["first_name"],
+            "middle_name": validated["middle_name"],
+            "surname": validated["surname"],
+            "mobile": validated["mobile"],
+            "email": validated["email"],
+        }
+        premium = premium_service.calculate_sync("motor_private", {"data": data})
+
+        quote = self.db.create_quote(
+            user_id=internal_user_id,
+            product_id="motor_private",
+            premium_amount=premium.get("total", 0),
+            sum_assured=None,
+            underwriting_data=data,
+            pricing_breakdown=premium,
+            product_name="Motor Private",
+        )
+        if app_id and hasattr(self.db, "update_motor_private_application"):
+            self.db.update_motor_private_application(app_id, {"quote_id": str(quote.id), "status": "quoted"})
+
+        return {
+            "quote_id": str(quote.id),
+            "product_name": "Motor Private",
+            "total_premium": premium.get("total", 0),
+            "breakdown": premium,
+        }
 
     def _to_dict(self, app):
         if not app:
