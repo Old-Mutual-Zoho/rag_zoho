@@ -82,6 +82,168 @@ def _is_negative(message: str) -> bool:
     return m in {"no", "n", "nope", "not now", "later", "maybe later"}
 
 
+def _is_explicit_guided_intent(message: str) -> bool:
+    m = (message or "").strip().lower()
+    if not m:
+        return False
+    explicit_triggers = [
+        "get a quote",
+        "get a quotation",
+        "get quotation",
+        "can i get a quote",
+        "can i get a quotation",
+        "can i get quotation",
+        "give me a quote",
+        "provide a quote",
+        "i want to apply",
+        "i want to buy",
+        "i want to purchase",
+        "help me apply",
+        "help me buy",
+    ]
+    if any(trigger in m for trigger in explicit_triggers):
+        return True
+
+    wants_quote = any(word in m for word in ["want", "need", "get"]) and any(word in m for word in ["quote", "quotation"])
+    wants_purchase = any(word in m for word in ["want", "need", "help me", "can i"]) and any(word in m for word in ["apply", "buy", "purchase"])
+    return wants_quote or wants_purchase
+
+
+def _should_reuse_product_topic(message: str, topic: Dict[str, Any]) -> bool:
+    if not topic or not topic.get("doc_id"):
+        return False
+
+    m = (message or "").strip().lower()
+    if not m or _detect_digital_flow(m):
+        return False
+
+    if _detect_section_intent(m):
+        return True
+
+    contextual_phrases = [
+        "what about",
+        "how about",
+        "what if",
+        "tell me more",
+        "more about",
+        "is it",
+        "does it",
+        "can it",
+        "would it",
+        "that one",
+        "this one",
+        "what else",
+        "how much is it",
+        "is it expensive",
+        "waiting period",
+    ]
+    if any(phrase in m for phrase in contextual_phrases):
+        return True
+
+    if re.search(r"\b(it|this|that|they|them|those|these)\b", m):
+        return True
+
+    follow_up_keywords = [
+        "benefits",
+        "coverage",
+        "covered",
+        "exclusions",
+        "eligibility",
+        "premium",
+        "pricing",
+        "price",
+        "cost",
+        "claim",
+        "claims",
+        "limit",
+        "limits",
+    ]
+    tokens = re.findall(r"\b[\w']+\b", m)
+    return len(tokens) <= 8 and any(keyword in m for keyword in follow_up_keywords)
+
+
+def _augment_query_with_topic(message: str, topic_name: Optional[str], *, use_topic: bool) -> str:
+    if not use_topic or not topic_name:
+        return message
+
+    topic_lower = topic_name.lower()
+    message_lower = (message or "").lower()
+    if topic_lower in message_lower:
+        return message
+    return f"{topic_name} {message}".strip()
+
+
+def _is_fallback_like_answer(answer: str) -> bool:
+    lowered = (answer or "").strip().lower()
+    if not lowered:
+        return True
+    fallback_markers = [
+        "i'm having trouble retrieving",
+        "i am having trouble retrieving",
+        "i'm not sure based on the available information",
+        "please try again in a moment",
+        "please rephrase",
+    ]
+    return any(marker in lowered for marker in fallback_markers)
+
+
+def _estimate_response_confidence(
+    response: Dict[str, Any],
+    retrieval_results: List[Dict[str, Any]],
+    products: List[Any],
+    filters: Dict[str, Any],
+) -> float:
+    answer = (response.get("answer") or "").strip()
+    sources = response.get("sources") if isinstance(response.get("sources"), list) else []
+    evidence_count = len(sources) or len(retrieval_results)
+    top_hit_score = 0.0
+    if retrieval_results:
+        try:
+            top_hit_score = float(retrieval_results[0].get("score") or 0.0)
+        except Exception:
+            top_hit_score = 0.0
+
+    confidence = 0.15
+    if answer:
+        confidence += 0.2
+
+    confidence += min(evidence_count, 5) / 5.0 * 0.25
+
+    if top_hit_score >= 0.9:
+        confidence += 0.2
+    elif top_hit_score >= 0.7:
+        confidence += 0.15
+    elif top_hit_score >= 0.5:
+        confidence += 0.1
+    elif top_hit_score >= 0.25:
+        confidence += 0.05
+
+    if filters.get("products"):
+        confidence += 0.1
+
+    if products:
+        try:
+            top_product_score = float(products[0][0] or 0.0)
+        except Exception:
+            top_product_score = 0.0
+
+        if top_product_score >= 1.5:
+            confidence += 0.15
+        elif top_product_score >= 1.2:
+            confidence += 0.12
+        elif top_product_score >= 0.9:
+            confidence += 0.08
+        elif top_product_score >= 0.5:
+            confidence += 0.04
+
+    if _is_fallback_like_answer(answer):
+        confidence = min(confidence, 0.25)
+    elif not retrieval_results:
+        confidence = min(confidence, 0.35)
+
+    return round(max(0.05, min(confidence, 0.95)), 2)
+
+
 def _build_section_query(product_name: str, section: str) -> str:
     base = product_name or "this insurance product"
     if section == "show_benefits":
@@ -317,11 +479,22 @@ class ConversationalMode:
         # Detect coarse intent (quote/buy/learn/etc.)
         broad_query = _is_broad_product_query(message)
         intent = self._detect_intent(message)
+        explicit_guided_intent = _is_explicit_guided_intent(message)
         if broad_query and intent in ("learn", "general"):
             intent = "discover"
 
         # Match relevant products
         products = self.product_matcher.match_products(message, top_k=3)
+
+        session = self.state_manager.get_session(session_id) or {}
+        ctx = dict(session.get("context") or {})
+        topic = (ctx.get("product_topic") or {}) if isinstance(ctx, dict) else {}
+        should_reuse_topic = _should_reuse_product_topic(message, topic)
+        retrieval_query = _augment_query_with_topic(
+            message,
+            topic.get("name"),
+            use_topic=should_reuse_topic,
+        )
 
         # Build filters for RAG retrieval.
         filters: Dict[str, Any] = {}
@@ -341,6 +514,9 @@ class ConversationalMode:
             if intent == "compare":
                 # Comparing products: allow multiple doc_ids.
                 filters["products"] = [p[2]["product_id"] for p in products[:3]]
+            elif should_reuse_topic and topic.get("doc_id"):
+                filters["products"] = [topic["doc_id"]]
+                logger.info("[RAG] Reusing session product topic filter: %s", topic["doc_id"])
             elif detected_product:
                 # User explicitly asked about a specific product - filter to that product only
                 # Find matching product in the list
@@ -353,15 +529,18 @@ class ConversationalMode:
                 # Single-product intent with high confidence: restrict to the best match.
                 filters["products"] = [products[0][2]["product_id"]]
                 logger.info("[RAG] Applying confident product filter: %s", products[0][2]["product_id"])
+        elif should_reuse_topic and topic.get("doc_id"):
+            filters["products"] = [topic["doc_id"]]
+            logger.info("[RAG] Reusing session product topic filter without fresh product match: %s", topic["doc_id"])
 
         # Retrieve relevant documents (hybrid BM25 + vector via APIRAGAdapter).
-        retrieval_results = await self.rag.retrieve(query=message, filters=filters or None, top_k=None)
+        retrieval_results = await self.rag.retrieve(query=retrieval_query, filters=filters or None, top_k=None)
 
         # Generate response
-        response = await self.rag.generate(query=message, context_docs=retrieval_results, conversation_history=self._get_recent_history(session_id))
+        response = await self.rag.generate(query=retrieval_query, context_docs=retrieval_results, conversation_history=self._get_recent_history(session_id))
 
         # ---- Record RAG metrics ----
-        confidence = response.get("confidence", 0.5)
+        confidence = _estimate_response_confidence(response, retrieval_results, products, filters)
         sources = response.get("sources", [])
         metrics_to_emit = [
             _metric_payload("confidence_score", confidence, conversation_id),
@@ -376,16 +555,17 @@ class ConversationalMode:
 
         # If confidence is low, suggest handover button
         show_handover_button = False
-        confidence = response.get("confidence", 0.5)
         if confidence < 0.4:
             show_handover_button = True
 
         products_matched_names = [p[2]["name"] for p in products] if products else []
+        if not products_matched_names and topic.get("name") and should_reuse_topic:
+            products_matched_names = [topic["name"]]
         if self.response_processor:
             processed = self.response_processor.process_response(
                 raw_response=response.get("answer"),
                 user_input=message,
-                confidence=response.get("confidence", 0.0),
+                confidence=confidence,
                 conversation_state=session,
                 session_id=session_id,
                 # When confidence is low, ResponseProcessor escalates if session_id is provided.
@@ -407,8 +587,8 @@ class ConversationalMode:
                 follow_up_flag = True
 
         # Determine product topic for follow-up guidance.
-        digital_flow = _detect_digital_flow(message)
-        top_product = products[0][2] if products else None
+        digital_flow = _detect_digital_flow(message) or topic.get("digital_flow")
+        top_product = products[0][2] if products else (topic if topic.get("doc_id") else None)
 
         if digital_flow or top_product:
             topic_name = None
@@ -418,7 +598,7 @@ class ConversationalMode:
             if top_product:
                 topic_name = top_product.get("name")
                 topic_url = top_product.get("url")
-                topic_doc_id = top_product.get("product_id")
+                topic_doc_id = top_product.get("product_id") or top_product.get("doc_id")
 
             # Persist topic in session context (so buttons can work).
             session = self.state_manager.get_session(session_id) or {}
@@ -478,7 +658,7 @@ class ConversationalMode:
 
         # Determine if we should suggest guided mode
         suggested_action = None
-        if intent in ["quote", "buy", "apply", "purchase"]:
+        if explicit_guided_intent:
             digital_flow = _detect_digital_flow(message)
 
             if digital_flow:
@@ -558,7 +738,7 @@ class ConversationalMode:
             "intent": intent,
             "intent_type": "INFORMATIONAL",
             "suggested_action": suggested_action,
-            "confidence": response.get("confidence", 0.5),
+            "confidence": confidence,
             "show_handover_button": show_handover_button,
         }
 
