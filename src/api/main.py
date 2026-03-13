@@ -20,6 +20,8 @@ load_dotenv()
 import json
 import logging
 import os
+import re
+from difflib import get_close_matches
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -300,13 +302,7 @@ def get_router():
     return chat_router
 
 
-GENERAL_INFO_ALIASES: Dict[str, str] = {
-    "motor_private": "motor-insurance",
-    "motor_vehicle": "motor-insurance",
-    "motor": "motor-insurance",
-    "travel": "travel-sure-plus-insurance",
-    "travel_insurance": "travel-sure-plus-insurance",
-}
+GENERAL_INFO_ALIASES: Dict[str, str] = {}
 
 
 def _normalize_general_info_key(value: str) -> str:
@@ -325,36 +321,113 @@ def _normalize_general_info_key(value: str) -> str:
     if "/" in key:
         key = key.split("/")[-1]
 
+    key = re.sub(r"[,()/\\\-_]+", " ", key)
+    key = re.sub(r"\s+", " ", key)
+
     return key.strip()
 
 
-def _general_info_candidate_paths(product: str, product_dir: Path) -> List[Path]:
+def _general_info_display_name_from_stem(stem: str) -> str:
+    return re.sub(r"[-_]+", " ", (stem or "")).strip()
+
+
+def _general_info_tokens(value: str) -> set[str]:
+    stopwords = {"insurance", "plan", "fund", "scheme", "cover", "product"}
+    normalized = _normalize_general_info_key(value)
+    return {token for token in normalized.split() if token and token not in stopwords}
+
+
+def _resolve_general_info_file(product: str, product_dir: Path) -> Optional[Path]:
     normalized = _normalize_general_info_key(product)
+    if not normalized or not product_dir.exists():
+        return None
 
-    candidate_ids: List[str] = []
+    candidate_files = sorted(product_dir.glob("*.json"))
+    metadata_cache: Dict[Path, Dict[str, Any]] = {}
 
+    def _load_info(path: Path) -> Dict[str, Any]:
+        if path in metadata_cache:
+            return metadata_cache[path]
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        metadata_cache[path] = data
+        return data
+
+    # 1) alias match first
     alias_target = GENERAL_INFO_ALIASES.get(normalized)
     if alias_target:
-        candidate_ids.append(alias_target)
+        alias_path = product_dir / f"{alias_target}.json"
+        if alias_path.exists():
+            return alias_path
 
-    candidate_ids.extend(
-        [
-            normalized,
-            normalized.replace("_", "-"),
-            normalized.replace("-", "_"),
-        ]
-    )
+    # 2) exact filename/display-name matches
+    for path in candidate_files:
+        if normalized in {
+            _normalize_general_info_key(path.stem),
+            _normalize_general_info_key(_general_info_display_name_from_stem(path.stem)),
+        }:
+            return path
 
-    deduped_ids: List[str] = []
-    seen: set[str] = set()
-    for candidate in candidate_ids:
-        clean_candidate = (candidate or "").strip()
-        if not clean_candidate or clean_candidate in seen:
-            continue
-        seen.add(clean_candidate)
-        deduped_ids.append(clean_candidate)
+    # 3) title/product_id matches from JSON content
+    for path in candidate_files:
+        info = _load_info(path)
+        if normalized in {
+            _normalize_general_info_key(str(info.get("title") or "")),
+            _normalize_general_info_key(str(info.get("product_id") or "")),
+        }:
+            return path
 
-    return [product_dir / f"{candidate_id}.json" for candidate_id in deduped_ids]
+    # 4) token overlap scoring
+    input_tokens = _general_info_tokens(normalized)
+    best_path: Optional[Path] = None
+    best_score: tuple[int, float] = (0, 0.0)
+    if input_tokens:
+        for path in candidate_files:
+            info = _load_info(path)
+            candidate_tokens = (
+                _general_info_tokens(path.stem)
+                | _general_info_tokens(_general_info_display_name_from_stem(path.stem))
+                | _general_info_tokens(str(info.get("title") or ""))
+                | _general_info_tokens(str(info.get("product_id") or ""))
+            )
+            if not candidate_tokens:
+                continue
+            overlap = len(input_tokens & candidate_tokens)
+            if overlap <= 0:
+                continue
+            coverage = overlap / max(len(input_tokens), 1)
+            score = (overlap, coverage)
+            if score > best_score:
+                best_score = score
+                best_path = path
+
+        min_overlap = 2 if len(input_tokens) > 1 else 1
+        if best_path is not None and best_score[0] >= min_overlap and best_score[1] >= 0.5:
+            return best_path
+
+    # 5) fuzzy match last
+    lookup: Dict[str, Path] = {}
+    for path in candidate_files:
+        info = _load_info(path)
+        for candidate in (
+            _normalize_general_info_key(path.stem),
+            _normalize_general_info_key(_general_info_display_name_from_stem(path.stem)),
+            _normalize_general_info_key(str(info.get("title") or "")),
+            _normalize_general_info_key(str(info.get("product_id") or "")),
+        ):
+            if candidate and candidate not in lookup:
+                lookup[candidate] = path
+
+    matches = get_close_matches(normalized, list(lookup.keys()), n=1, cutoff=0.72)
+    if matches:
+        return lookup[matches[0]]
+
+    return None
 
 
 # ============================================================================
@@ -1314,14 +1387,10 @@ async def get_general_information(
         BASE_DIR = Path(__file__).resolve().parents[2]
         PRODUCT_DIR = BASE_DIR / "general_information" / "product_json"
 
-        product_file: Optional[Path] = None
-        for candidate in _general_info_candidate_paths(product, PRODUCT_DIR):
-            if candidate.exists():
-                product_file = candidate
-                break
+        product_file = _resolve_general_info_file(product, PRODUCT_DIR)
 
         if product_file is None:
-            logger.error(f"Product file not found: {product_file}")
+            logger.error("Product information not found for product=%s", product)
             raise HTTPException(status_code=404, detail="Product information not found")
 
         logger.info(f"Resolved product file path: {product_file}")
