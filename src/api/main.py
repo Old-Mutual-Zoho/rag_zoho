@@ -649,9 +649,9 @@ async def get_ai_performance_metrics(
     try:
         chatbot_leads: int = _safe_non_negative_int(
             db.count_quotes(
-            current_start,
-            now,
-            exclude_statuses=_PAYMENT_STATUSES,
+                current_start,
+                now,
+                exclude_statuses=_PAYMENT_STATUSES,
             )
         )
     except Exception as e:
@@ -1484,7 +1484,10 @@ async def submit_personal_accident_full_form(body: PersonalAccidentFullFormReque
             breakdown=premium.get("breakdown", {}),
         )
     except FormValidationError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors})
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors},
+        )
     except Exception as e:
         logger.error(f"Error submitting Personal Accident full form: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1496,9 +1499,17 @@ async def submit_motor_private_full_form(body: MotorPrivateFullFormRequest, db: 
     try:
         controller = MotorPrivateController(db)
         result = await controller.submit_full_form(body.user_id, body.data or {})
-        return MotorPrivateFullFormResponse(quote_id=result["quote_id"], product_name=result["product_name"], total_premium=result["total_premium"], breakdown=result["breakdown"])
+        return MotorPrivateFullFormResponse(
+            quote_id=result["quote_id"],
+            product_name=result["product_name"],
+            total_premium=result["total_premium"],
+            breakdown=result["breakdown"],
+        )
     except FormValidationError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors})
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors},
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
@@ -1551,7 +1562,10 @@ async def submit_travel_insurance_full_form(body: TravelInsuranceFullFormRequest
             breakdown=pricing.get("breakdown", {}),
         )
     except FormValidationError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors})
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors},
+        )
     except Exception as e:
         logger.error(f"Error submitting Travel Insurance full form: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1585,7 +1599,10 @@ async def submit_serenicare_full_form(body: SerenicareFullFormRequest, db: Postg
             breakdown=pricing.get("breakdown", {}),
         )
     except FormValidationError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors})
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors},
+        )
     except Exception as e:
         logger.error(f"Error submitting Serenicare full form: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
