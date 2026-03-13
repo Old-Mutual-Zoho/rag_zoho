@@ -325,11 +325,14 @@ def get_router():
 
 
 GENERAL_INFO_ALIASES: Dict[str, str] = {
-    "motor_private": "motor-insurance",
-    "motor_vehicle": "motor-insurance",
-    "motor": "motor-insurance",
-    "travel": "travel-sure-plus-insurance",
-    "travel_insurance": "travel-sure-plus-insurance",
+    "motor_private": "motor_private",
+    "motor-private": "motor_private",
+    "motor_vehicle": "motor_private",
+    "motor-vehicle": "motor_private",
+    "motor": "motor_private",
+    "travel": "travel",
+    "travel_insurance": "travel",
+    "travel-insurance": "travel",
 }
 
 
@@ -349,6 +352,8 @@ def _normalize_general_info_key(value: str) -> str:
     if "/" in key:
         key = key.split("/")[-1]
 
+    key = key.replace(" ", "-")
+
     return key.strip()
 
 
@@ -364,8 +369,8 @@ def _general_info_candidate_paths(product: str, product_dir: Path) -> List[Path]
     candidate_ids.extend(
         [
             normalized,
-            normalized.replace("_", "-"),
             normalized.replace("-", "_"),
+            normalized.replace("_", "-"),
         ]
     )
 
@@ -1224,33 +1229,42 @@ async def get_general_information(
         BASE_DIR = Path(__file__).resolve().parents[2]  # D:\ZOHO\rag
         PRODUCT_DIR = BASE_DIR / "general_information" / "product_json"
 
-        product_file: Optional[Path] = None
-        for candidate in _general_info_candidate_paths(product, PRODUCT_DIR):
-            if candidate.exists():
-                product_file = candidate
-                break
+        product_file = next(
+            (candidate for candidate in _general_info_candidate_paths(product, PRODUCT_DIR) if candidate.exists()),
+            None,
+        )
 
         if product_file is None:
-            logger.error(f"Product file not found: {product_file}")
+            logger.info("General info not found for product=%s", product)
             raise HTTPException(status_code=404, detail="Product information not found")
-
-        logger.info(f"Resolved product file path: {product_file}")
 
         # --- Load JSON ---
         try:
             with open(product_file, "r", encoding="utf-8") as f:
                 info = json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load product file {product_file}: {e}")
+        except (OSError, json.JSONDecodeError) as e:
+            logger.error("Failed to load product file %s: %s", product_file, e)
             raise HTTPException(status_code=500, detail="Failed to load product information")
 
-        logger.info(f"General info served for product={product}")
-        return JSONResponse(content=info)
+        if not isinstance(info, dict):
+            raise HTTPException(status_code=500, detail="Invalid product information format")
+
+        normalized_response = {
+            "product_id": info.get("product_id") or product_file.stem,
+            "title": info.get("title") or product_file.stem.replace("-", " ").replace("_", " ").title(),
+            "definition": info.get("definition") or "",
+            "benefits": info.get("benefits") or [],
+            "eligibility": info.get("eligibility") or "",
+            "source_url": info.get("source_url") or "",
+        }
+
+        logger.info("General info served for product=%s via file=%s", product, product_file.name)
+        return JSONResponse(content=normalized_response)
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)} (product={product})")
+        logger.error("Unexpected error in general info endpoint for product=%s: %s", product, e)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 # ---------- API router (prefix /api) ----------
