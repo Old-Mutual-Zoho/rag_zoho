@@ -272,6 +272,38 @@ class PostgresDB:
             )
             return int(s.execute(stmt).scalar() or 0)
 
+    def count_quotes(
+        self,
+        start: datetime,
+        end: datetime,
+        *,
+        exclude_statuses: Optional[List[str]] = None,
+    ) -> int:
+        """
+        Count quotes created in [start, end).
+
+        Pass ``exclude_statuses`` to filter out quotes that have progressed
+        beyond a certain state.  For the "chatbot leads" metric we exclude
+        quotes whose status is 'paid', 'payment_initiated', or 'completed' so
+        that only users who got a quote but never proceeded to payment are
+        counted.
+        """
+        with self._session() as s:
+            stmt = (
+                select(func.count())
+                .select_from(Quote)
+                .where(
+                    Quote.generated_at >= start,
+                    Quote.generated_at < end,
+                )
+            )
+            if exclude_statuses:
+                exclude_upper = [st.upper() for st in exclude_statuses]
+                stmt = stmt.where(
+                    func.upper(Quote.status).not_in(exclude_upper)
+                )
+            return int(s.execute(stmt).scalar() or 0)
+
     def list_rag_metrics(
         self,
         *,

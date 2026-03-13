@@ -20,7 +20,7 @@ load_dotenv()
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from typing import Any, Dict, List, Optional
@@ -146,13 +146,7 @@ class APIRAGAdapter:
         k = self.cfg.retrieval.top_k if top_k is None else top_k
         return retrieve_context(question=query, cfg=self.cfg, top_k=k, filters=filters)
 
-    async def generate(
-        self,
-        query: str,
-        context_docs: List[Dict],
-        conversation_history: List[Dict],
-        original_question: Optional[str] = None,
-    ):
+    async def generate(self, query: str, context_docs: List[Dict], conversation_history: List[Dict]):
         """
         Use the configured generation backend (Gemini by default) to
         produce an answer grounded in the retrieved context.
@@ -183,12 +177,6 @@ class APIRAGAdapter:
             """
             Fallback: build an answer directly from known product chunks when
             the generator is unavailable or fails.
-
-            Priority:
-            - Use payload["text"] from retrieved hits when present.
-            - If missing, but doc_id is known, load sections from website_chunks.jsonl
-              and stitch together overview + benefits for that product.
-            - As a last resort, resolve individual chunk IDs from website_chunks.jsonl.
             """
             confidence = _compute_confidence()
             snippets: List[str] = []
@@ -221,20 +209,16 @@ class APIRAGAdapter:
                     benefits = sections.get("benefits") or []
 
                     if overview:
-                        # Take the first overview chunk as the core "what is X" answer.
                         ov_text = (overview[0].get("text") or "").strip()
                         if ov_text:
                             snippets.append(ov_text)
 
                     if benefits:
-                        # Add a concise benefits line if available.
                         b0 = (benefits[0].get("text") or "").strip()
                         if b0:
                             snippets.append(b0)
 
             # 3) As a last resort, try to resolve individual chunk IDs directly
-            #    from website_chunks.jsonl when doc_id-based lookup fails or when
-            #    the stored vector payloads are missing "text".
             if len(snippets) < 1:
                 try:
                     chunks_path = Path(__file__).parent.parent.parent / "data" / "processed" / "website_chunks.jsonl"
@@ -273,31 +257,23 @@ class APIRAGAdapter:
             return _extractive_answer()
 
         stats = _retrieval_stats()
-        # If retrieval is weak or empty, avoid LLM and fall back to extractive mode.
-        # Keep a low threshold so generation still runs when chunks are reasonably relevant.
-        if not context_docs or stats["avg_score"] < 0.2:
+        if not context_docs or stats["avg_score"] < 0.55:
             return _extractive_answer()
 
         if self.cfg.generation.backend == "gemini":
-            # Use the new async Gemini generator (MiaGenerator). If the model call
-            # fails or returns our generic phone number fallback, degrade to a
-            # context-only extractive answer instead of surfacing the error text.
+            mia = MiaGenerator()
             try:
-                mia = MiaGenerator()
-                question_for_generation = (original_question or query or "").strip() or query
-                answer = await mia.generate(question_for_generation, context_docs, conversation_history)
-            except Exception as e:  # pragma: no cover - defensive; MiaGenerator already logs
-                logger.error("Gemini generation unavailable, falling back to extractive answer: %s", e, exc_info=True)
+                answer = await mia.generate(query, context_docs, conversation_history)
+            except Exception as e:  # pragma: no cover
+                logger.error("MiaGenerator.generate raised unexpectedly: %s", e, exc_info=True)
                 return _extractive_answer()
 
-            lowered_answer = (answer or "").strip().lower()
-            if (not lowered_answer) or ("i'm having trouble retrieving those details" in lowered_answer):
-                # LLM unavailable / failed -> use extractive context instead.
+            fallback_phrase = "I'm having trouble retrieving those details. Please call 0800-100-900 for immediate help."
+            if not answer or fallback_phrase in answer:
                 return _extractive_answer()
 
             return {"answer": answer, "confidence": _compute_confidence(), "sources": context_docs}
 
-        # Unsupported backend -> degrade gracefully to extractive answer.
         return _extractive_answer()
 
 
@@ -325,14 +301,11 @@ def get_router():
 
 
 GENERAL_INFO_ALIASES: Dict[str, str] = {
-    "motor_private": "motor_private",
-    "motor-private": "motor_private",
-    "motor_vehicle": "motor_private",
-    "motor-vehicle": "motor_private",
-    "motor": "motor_private",
-    "travel": "travel",
-    "travel_insurance": "travel",
-    "travel-insurance": "travel",
+    "motor_private": "motor-insurance",
+    "motor_vehicle": "motor-insurance",
+    "motor": "motor-insurance",
+    "travel": "travel-sure-plus-insurance",
+    "travel_insurance": "travel-sure-plus-insurance",
 }
 
 
@@ -352,8 +325,6 @@ def _normalize_general_info_key(value: str) -> str:
     if "/" in key:
         key = key.split("/")[-1]
 
-    key = key.replace(" ", "-")
-
     return key.strip()
 
 
@@ -369,8 +340,8 @@ def _general_info_candidate_paths(product: str, product_dir: Path) -> List[Path]
     candidate_ids.extend(
         [
             normalized,
-            normalized.replace("-", "_"),
             normalized.replace("_", "-"),
+            normalized.replace("-", "_"),
         ]
     )
 
@@ -395,20 +366,15 @@ from src.chatbot.controllers.motor_private_controller import MOTOR_PRIVATE_VEHIC
 
 @app.get("/api/v1/motor-private/vehicle-makes", tags=["Motor Private"])
 async def get_motor_private_vehicle_makes():
-    """
-    Get the list of vehicle make options for Motor Private.
-    """
     return {"options": MOTOR_PRIVATE_VEHICLE_MAKE_OPTIONS}
 
 
 class ChatMessage(BaseModel):
-    """Chat request. Use form_data when the frontend submits a step form (e.g. Personal Accident)."""
-
     message: str = ""
     session_id: Optional[str] = None
     user_id: str
     metadata: Optional[Dict] = None
-    form_data: Optional[Dict] = None  # Step form payload; when set, used as user_input in guided flows
+    form_data: Optional[Dict] = None
 
 
 class ChatResponse(BaseModel):
@@ -433,8 +399,6 @@ class QuoteResponse(BaseModel):
 
 
 class PersonalAccidentFullFormRequest(BaseModel):
-    """Submit the full Personal Accident form in a single payload (no guided steps)."""
-
     user_id: str = Field(..., description="External user identifier (e.g. phone number)")
     data: Dict[str, Any] = Field(..., description="Flattened form fields for Personal Accident application")
 
@@ -449,8 +413,6 @@ class PersonalAccidentFullFormResponse(BaseModel):
 
 
 class MotorPrivateFullFormRequest(BaseModel):
-    """Submit the full Motor Private form in a single payload (no guided steps)."""
-
     user_id: str = Field(..., description="External user identifier (e.g. phone number)")
     data: Dict[str, Any] = Field(..., description="Flattened form fields for Motor Private quote")
 
@@ -463,8 +425,6 @@ class MotorPrivateFullFormResponse(BaseModel):
 
 
 class TravelInsuranceFullFormRequest(BaseModel):
-    """Submit the full Travel Insurance form in a single payload (no guided steps)."""
-
     user_id: str = Field(..., description="External user identifier (e.g. phone number)")
     data: Dict[str, Any] = Field(..., description="Flattened form fields for Travel Insurance application")
 
@@ -478,8 +438,6 @@ class TravelInsuranceFullFormResponse(BaseModel):
 
 
 class SerenicareFullFormRequest(BaseModel):
-    """Submit the full Serenicare form in a single payload (no guided steps)."""
-
     user_id: str = Field(..., description="External user identifier (e.g. phone number)")
     data: Dict[str, Any] = Field(..., description="Flattened form fields for Serenicare application")
 
@@ -493,8 +451,6 @@ class SerenicareFullFormResponse(BaseModel):
 
 
 class CreateSessionRequest(BaseModel):
-    """Create a new chatbot session (e.g. when user opens the app)."""
-
     user_id: str = Field(..., description="User identifier (e.g. phone number or auth id)")
 
 
@@ -504,8 +460,6 @@ class CreateSessionResponse(BaseModel):
 
 
 class StartGuidedRequest(BaseModel):
-    """Start a guided flow (e.g. Personal Accident). Session is created if session_id is omitted."""
-
     flow_name: str = Field(..., description="Flow id, e.g. 'personal_accident'")
     user_id: str
     session_id: Optional[str] = None
@@ -513,8 +467,6 @@ class StartGuidedRequest(BaseModel):
 
 
 class CSATFeedbackRequest(BaseModel):
-    """Post-conversation CSAT feedback."""
-
     rating: int = Field(..., ge=1, le=5, description="CSAT rating from 1 to 5")
     feedback: Optional[str] = Field(default="", description="Optional user feedback text")
     session_id: Optional[str] = Field(default=None, description="Chat session id")
@@ -528,13 +480,11 @@ class CSATFeedbackRequest(BaseModel):
 
 @app.get("/", tags=["Health"])
 async def root():
-    """Health check endpoint."""
     return {"service": "Old Mutual Chatbot API", "status": "healthy", "version": "1.0.0", "timestamp": datetime.now().isoformat()}
 
 
 @app.get("/health", tags=["Health"])
 async def health_check():
-    """Detailed health check (Postgres, Redis)."""
     return {"status": "healthy", "database": {"postgres": "connected", "redis": redis_cache.ping()}, "timestamp": datetime.now().isoformat()}
 
 
@@ -567,9 +517,6 @@ async def get_system_performance_metrics(
 ):
     """
     System performance KPIs for the admin dashboard.
-
-    Computes escalation rate, AI resolution rate, and payment success rate
-    for the last `days` days, with change vs the previous period.
     """
     now = datetime.utcnow()
     current_start = now - timedelta(days=days)
@@ -581,7 +528,6 @@ async def get_system_performance_metrics(
     def _delta(current: float, previous: float) -> float:
         return round(current - previous, 2)
 
-    # Escalation rate (user-confirmed)
     current_conversations = db.count_conversations(current_start, now)
     previous_conversations = db.count_conversations(previous_start, current_start)
     current_escalations = len(
@@ -605,12 +551,10 @@ async def get_system_performance_metrics(
     escalation_rate_prev = _rate(previous_escalations, previous_conversations)
     escalation_change = _delta(escalation_rate, escalation_rate_prev)
 
-    # AI resolution rate: proxy as non-escalated share of conversations
     resolution_rate = _rate(max(current_conversations - current_escalations, 0), current_conversations)
     resolution_rate_prev = _rate(max(previous_conversations - previous_escalations, 0), previous_conversations)
     resolution_change = _delta(resolution_rate, resolution_rate_prev)
 
-    # Payment success rate: success / (success + failed) within window
     current_success = db.count_payment_transactions(current_start, now, ["SUCCESS", "COMPLETED"])
     current_failed = db.count_payment_transactions(current_start, now, ["FAILED", "ERROR"])
     previous_success = db.count_payment_transactions(previous_start, current_start, ["SUCCESS", "COMPLETED"])
@@ -692,6 +636,13 @@ async def get_ai_performance_metrics(
     def _format_count(value: int) -> str:
         return f"{value:,}"
 
+    def _safe_non_negative_int(value: Any) -> int:
+        try:
+            parsed = int(value)
+            return parsed if parsed >= 0 else 0
+        except (TypeError, ValueError):
+            return 0
+
     def _window_metrics(start: datetime, end: datetime) -> Dict[str, Any]:
         rag = db.list_rag_metrics(
             start=start,
@@ -727,8 +678,6 @@ async def get_ai_performance_metrics(
         )
 
         escalation_rate = _rate(escalations, conversations)
-
-        # Resolution rate: proxy as non-escalated share of conversations.
         resolution_rate = _rate(max(conversations - escalations, 0), conversations)
         fallback_rate = _rate(fallbacks, conversations)
 
@@ -746,6 +695,30 @@ async def get_ai_performance_metrics(
     current = _window_metrics(current_start, now)
     previous = _window_metrics(previous_start, current_start)
 
+    # ------------------------------------------------------------------ #
+    # Total conversations & chatbot leads
+    # ------------------------------------------------------------------ #
+    total_conversations: int = _safe_non_negative_int(current.get("conversations", 0))
+
+    # Leads = quotes generated in the window that never progressed to payment.
+    # We exclude statuses that indicate payment was initiated or completed.
+    _PAYMENT_STATUSES = ["paid", "payment_initiated", "payment_pending", "completed", "active"]
+    try:
+        chatbot_leads: int = _safe_non_negative_int(
+            db.count_quotes(
+                current_start,
+                now,
+                exclude_statuses=_PAYMENT_STATUSES,
+            )
+        )
+    except Exception as e:
+        # Graceful fallback: count_quotes may not exist on the in-memory stub
+        logger.warning("count_quotes unavailable, defaulting chatbot_leads to 0: %s", e)
+        chatbot_leads = 0
+
+    # ------------------------------------------------------------------ #
+    # CSAT
+    # ------------------------------------------------------------------ #
     csat_events_current = db.list_conversation_events(
         start=current_start,
         end=now,
@@ -764,7 +737,6 @@ async def get_ai_performance_metrics(
     csat_previous = _avg([v for v in csat_prev_vals if v > 0])
     csat_delta = round(csat_current - csat_previous, 2)
 
-    # Rated accuracy (proxy): ratings 4-5 are treated as "accurate"
     rated_threshold = 4
     rated_current = [v for v in csat_current_vals if v > 0]
     rated_prev = [v for v in csat_prev_vals if v > 0]
@@ -898,46 +870,58 @@ async def get_ai_performance_metrics(
         intent_groups[key].append({"payload": payload, "created_at": ev.created_at})
 
     def _trend_series(events: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Build today/weekly/monthly/yearly trend series.
+        Uses timezone-aware UTC datetimes throughout to avoid offset-naive vs
+        offset-aware comparison errors.
+        """
         series = {}
+        now_utc = datetime.now(tz=timezone.utc)
+
+        def _aware(dt: datetime) -> datetime:
+            """Ensure a datetime is timezone-aware (UTC)."""
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt
 
         # Today (4-hour buckets)
-        start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_today = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
         buckets = []
         for i in range(0, 24, 4):
             label = f"{i:02d}:00"
-            end_bucket = start_today + timedelta(hours=i + 4)
             start_bucket = start_today + timedelta(hours=i)
-            count = sum(1 for e in events if start_bucket <= e["created_at"] < end_bucket)
+            end_bucket = start_today + timedelta(hours=i + 4)
+            count = sum(1 for e in events if start_bucket <= _aware(e["created_at"]) < end_bucket)
             buckets.append({"label": label, "inquiries": count})
         series["today"] = buckets
 
         # Weekly (last 7 days)
         weekly = []
-        week_start = now - timedelta(days=6)
+        week_start = now_utc - timedelta(days=6)
         for i in range(7):
-            day = (week_start + timedelta(days=i))
+            day = week_start + timedelta(days=i)
             label = day.strftime("%a")
             day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
             day_end = day_start + timedelta(days=1)
-            count = sum(1 for e in events if day_start <= e["created_at"] < day_end)
+            count = sum(1 for e in events if day_start <= _aware(e["created_at"]) < day_end)
             weekly.append({"label": label, "inquiries": count})
         series["weekly"] = weekly
 
         # Monthly (last 4 weeks)
         monthly = []
         for i in range(4):
-            start_week = now - timedelta(days=(27 - i * 7))
+            start_week = now_utc - timedelta(days=(27 - i * 7))
             end_week = start_week + timedelta(days=7)
-            count = sum(1 for e in events if start_week <= e["created_at"] < end_week)
+            count = sum(1 for e in events if start_week <= _aware(e["created_at"]) < end_week)
             monthly.append({"label": f"Week {i + 1}", "inquiries": count})
         series["monthly"] = monthly
 
         # Yearly (last 12 months)
         yearly = []
         for i in range(12):
-            month_start = (now.replace(day=1) - timedelta(days=30 * (11 - i))).replace(day=1)
+            month_start = (now_utc.replace(day=1) - timedelta(days=30 * (11 - i))).replace(day=1)
             month_end = (month_start + timedelta(days=32)).replace(day=1)
-            count = sum(1 for e in events if month_start <= e["created_at"] < month_end)
+            count = sum(1 for e in events if month_start <= _aware(e["created_at"]) < month_end)
             yearly.append({"label": month_start.strftime("%b"), "inquiries": count})
         series["yearly"] = yearly
 
@@ -1016,14 +1000,12 @@ async def get_ai_performance_metrics(
             }
         )
 
-    # Learning opportunities
     learning_ops = [
         {"title": "Unanswered Gaps", "note": f"{len(low_conf_events)} low-confidence topics detected."},
         {"title": "Suggested Intents", "note": "Review high-volume intents for consolidation."},
         {"title": "Training Needs", "note": "Check confidence band drops in recent intents."},
     ]
 
-    # Escalation analysis
     escalations = db.list_escalations(current_start, now)
     reason_counts = Counter([(e.escalation_reason or "Unspecified") for e in escalations])
     total_escalations = sum(reason_counts.values()) or 1
@@ -1037,7 +1019,6 @@ async def get_ai_performance_metrics(
         for reason, count in reason_counts.most_common(4)
     ]
 
-    # Model health
     last_hour_metrics = db.list_rag_metrics(
         start=now - timedelta(hours=1),
         end=now,
@@ -1071,6 +1052,12 @@ async def get_ai_performance_metrics(
         "learningOps": learning_ops,
         "escalationReasons": escalation_reasons,
         "modelHealth": model_health,
+        # ---- real business counts ----
+        "totalConversations": total_conversations,
+        "chatbotLeads": chatbot_leads,
+        # Backward-compatible aliases
+        "total_conversations": total_conversations,
+        "chatbot_leads": chatbot_leads,
     }
 
 
@@ -1088,7 +1075,6 @@ async def post_csat_feedback(
         conversation_id = session.get("conversation_id") or session_id
 
     if not conversation_id and user_id:
-        # No active session; store against user id for analytics
         conversation_id = user_id
 
     if not conversation_id:
@@ -1116,8 +1102,6 @@ async def post_csat_feedback(
 
 
 async def _handle_chat_message(request: ChatMessage, router: ChatRouter, db: PostgresDB) -> ChatResponse:
-    """Shared logic for chat message. In conversational mode uses same RAG retrieval as run_rag (config top_k, synonyms, re-ranking)."""
-    # Resolve external identifier (e.g. phone) to internal user UUID so session/conversation creation never hits FK violation
     user = db.get_or_create_user(phone_number=request.user_id)
     internal_user_id = str(user.id)
 
@@ -1125,14 +1109,10 @@ async def _handle_chat_message(request: ChatMessage, router: ChatRouter, db: Pos
     if not session_id:
         session_id = state_manager.create_session(internal_user_id)
     else:
-        # If a provided session_id no longer exists in Redis (e.g., TTL expired),
-        # create a fresh session and return that id so the client can continue consistently.
         existing_session = state_manager.get_session(session_id)
         if not existing_session:
             session_id = state_manager.create_session(internal_user_id)
 
-    # Route message (form_data from frontend is used as user_input in guided flows)
-    # Conversational path uses APIRAGAdapter.retrieve() with cfg.retrieval.top_k, synonym expansion, re-ranking
     response = await router.route(
         message=request.message or "",
         session_id=session_id,
@@ -1141,8 +1121,6 @@ async def _handle_chat_message(request: ChatMessage, router: ChatRouter, db: Pos
         db=db,
     )
 
-    # In escalated mode, hand over to human agent: mirror every user text message to
-    # the session thread in Slack and seed recent bot/user context once for the agent.
     if response.get("mode") == "escalated" and (request.message or "").strip():
         try:
             session_for_thread = state_manager.get_session(session_id) or {}
@@ -1173,7 +1151,6 @@ async def _handle_chat_message(request: ChatMessage, router: ChatRouter, db: Pos
             response["forwarded_to_agent"] = False
             response["forward_error"] = str(e)
 
-    # Save message to database and update Redis message cache
     session = state_manager.get_session(session_id)
     if session:
         user_content = json.dumps(request.form_data) if request.form_data else request.message
@@ -1183,11 +1160,9 @@ async def _handle_chat_message(request: ChatMessage, router: ChatRouter, db: Pos
             content=user_content,
             metadata=request.metadata or {},
         )
-        # Build the rolling Redis message buffer
         cached_messages = list(session.get("recent_messages") or [])
         cached_messages.append({"role": "user", "content": user_content})
 
-        # In escalated mode, avoid storing repeated bot acknowledgements as assistant replies.
         if response.get("mode") != "escalated":
             resp_val = response.get("response")
             if isinstance(resp_val, dict):
@@ -1202,8 +1177,6 @@ async def _handle_chat_message(request: ChatMessage, router: ChatRouter, db: Pos
             )
             cached_messages.append({"role": "assistant", "content": assistant_content})
 
-        # Persist last 10 messages (5 turns) back to Redis so follow-up turns
-        # can read history without hitting PostgreSQL.
         state_manager.update_session(session_id, {"recent_messages": cached_messages[-10:]})
 
     return ChatResponse(response=response, session_id=session_id, mode=response.get("mode", "conversational"), timestamp=datetime.now().isoformat())
@@ -1215,28 +1188,24 @@ async def get_general_information(
     product: str,
     redis=Depends(get_redis)
 ):
-    """
-    Serve general information for a product.
-    - product: product key (e.g. serenicare, motor_private, personal_accident, travel)
-    Returns: definition, benefits, eligibility for the product.
-    """
-
     logger = logging.getLogger("general_information")
     logger.info(f"General info request: product={product}")
 
     try:
-        # --- Resolve product JSON path safely ---
-        BASE_DIR = Path(__file__).resolve().parents[2]  # D:\ZOHO\rag
+        BASE_DIR = Path(__file__).resolve().parents[2]
         PRODUCT_DIR = BASE_DIR / "general_information" / "product_json"
 
-        product_file = next(
-            (candidate for candidate in _general_info_candidate_paths(product, PRODUCT_DIR) if candidate.exists()),
-            None,
-        )
+        product_file: Optional[Path] = None
+        for candidate in _general_info_candidate_paths(product, PRODUCT_DIR):
+            if candidate.exists():
+                product_file = candidate
+                break
 
         if product_file is None:
-            logger.info("General info not found for product=%s", product)
+            logger.error(f"Product file not found: {product_file}")
             raise HTTPException(status_code=404, detail="Product information not found")
+
+        logger.info(f"Resolved product file path: {product_file}")
 
         # --- Load JSON ---
         try:
@@ -1267,16 +1236,12 @@ async def get_general_information(
         logger.error("Unexpected error in general info endpoint for product=%s: %s", product, e)
         raise HTTPException(status_code=500, detail="Internal server error")
 
-# ---------- API router (prefix /api) ----------
-# api_router = APIRouter()  # app-level dependency covers these too now
-
 
 @api_router.post("/session", response_model=CreateSessionResponse, tags=["Sessions"])
 async def create_session(
     body: CreateSessionRequest,
     db: PostgresDB = Depends(get_db),
 ):
-    """Create a new chat session. Returns session_id for later requests."""
     try:
         user = db.get_or_create_user(phone_number=body.user_id)
         session_id = state_manager.create_session(str(user.id))
@@ -1288,7 +1253,6 @@ async def create_session(
 
 @api_router.get("/session/{session_id}")
 async def get_session_state(session_id: str):
-    """Return current session state for the frontend (mode, flow, step, step name)."""
     try:
         session = state_manager.get_session(session_id)
         if not session:
@@ -1304,7 +1268,6 @@ async def get_session_state(session_id: str):
             step_name = step_names[step] if step < len(step_names) else None
             steps_total = len(step_names)
         elif current_flow == "journey":
-            # Dynamic flow: steps are determined by engine state, not a static list.
             step_name = "dynamic"
             steps_total = None
 
@@ -1326,7 +1289,6 @@ async def get_session_state(session_id: str):
 
 @api_router.get("/forms/draft/{session_id}/{flow_name}", tags=["Forms"])
 async def get_form_draft(session_id: str, flow_name: str):
-    """Fetch the cached draft for a multi-step form flow."""
     try:
         draft = state_manager.get_form_draft(session_id, flow_name)
         if not draft:
@@ -1341,7 +1303,6 @@ async def get_form_draft(session_id: str, flow_name: str):
 
 @api_router.delete("/forms/draft/{session_id}/{flow_name}", tags=["Forms"])
 async def delete_form_draft(session_id: str, flow_name: str):
-    """Clear a cached draft for a multi-step form flow."""
     try:
         state_manager.clear_form_draft(session_id, flow_name)
         return {"status": "deleted", "session_id": session_id, "flow": flow_name}
@@ -1356,7 +1317,6 @@ async def start_guided_body(
     router: ChatRouter = Depends(get_router),
     db: PostgresDB = Depends(get_db),
 ):
-    """Start a guided flow. If session_id is omitted, a new session is created."""
     try:
         session_id = body.session_id
         user = db.get_or_create_user(phone_number=body.user_id)
@@ -1381,10 +1341,6 @@ async def api_send_message(
     router: ChatRouter = Depends(get_router),
     db: PostgresDB = Depends(get_db),
 ):
-    """
-    Send a message or form_data (frontend). Uses same RAG retrieval as run_rag:
-    config-driven top_k, synonym expansion, re-ranking. Routes to conversational or guided mode.
-    """
     try:
         return await _handle_chat_message(request, router, db)
     except FormValidationError as e:
@@ -1402,22 +1358,10 @@ async def api_send_message(
 
 
 @app.websocket("/ws/chat")
-async def websocket_chat(
-    websocket: WebSocket,
-):
-    """
-    WebSocket endpoint for chat conversations.
-
-    - Expects JSON payloads shaped like ChatMessage:
-      { "message": "...", "session_id": "...", "user_id": "...", "metadata": {...}, "form_data": {...} }
-    - Returns ChatResponse-shaped JSON for each incoming message.
-    - Uses the same ChatRouter/RAG pipeline as the HTTP /api/chat/message endpoint.
-    - Protected by the same API key mechanism using the X-API-KEY header.
-    """
+async def websocket_chat(websocket: WebSocket):
     from src.chatbot.dependencies import get_api_keys
     import hmac
 
-    # Authenticate using the same API key as HTTP routes.
     api_key = websocket.headers.get("x-api-key") or websocket.query_params.get("api_key")
     valid_keys = get_api_keys()
     candidate = (api_key or "").strip()
@@ -1434,40 +1378,23 @@ async def websocket_chat(
         except WebSocketDisconnect:
             break
         except Exception:
-            # Malformed frame; close with a generic error.
             await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
             break
 
         try:
             msg = ChatMessage(**data)
         except ValidationError as e:
-            await websocket.send_json(
-                {
-                    "error": "invalid_payload",
-                    "details": e.errors(),
-                }
-            )
+            await websocket.send_json({"error": "invalid_payload", "details": e.errors()})
             continue
 
         try:
             resp = await _handle_chat_message(msg, chat_router, postgres_db)
         except FormValidationError as e:
-            await websocket.send_json(
-                {
-                    "error": "validation_error",
-                    "message": e.message,
-                    "field_errors": e.field_errors,
-                }
-            )
+            await websocket.send_json({"error": "validation_error", "message": e.message, "field_errors": e.field_errors})
             continue
         except Exception as e:
             logger.error("Error processing websocket message: %s", e, exc_info=True)
-            await websocket.send_json(
-                {
-                    "error": "server_error",
-                    "detail": "An error occurred while processing your message.",
-                }
-            )
+            await websocket.send_json({"error": "server_error", "detail": "An error occurred while processing your message."})
             continue
 
         await websocket.send_json(resp.dict())
@@ -1475,12 +1402,6 @@ async def websocket_chat(
 
 # ---------- Product routes ----------
 def _public_product(matcher: ProductMatcher, item: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Convert internal product representation (doc_id-based) to a frontend-friendly shape.
-
-    - product_id: short stable key like "personal/insure/serenicare"
-    - doc_id: internal id like "website:product:personal/insure/serenicare" (kept for debugging/back-compat)
-    """
     doc_id = item.get("doc_id") or item.get("product_id") or ""
     public_id = (item.get("product_key") or matcher.get_public_id(doc_id) or doc_id) if doc_id else (item.get("product_key") or "")
     return {
@@ -1495,12 +1416,6 @@ def _public_product(matcher: ProductMatcher, item: Dict[str, Any]) -> Dict[str, 
 
 
 def _resolve_product_doc_id(matcher: ProductMatcher, product_id: str) -> str:
-    """
-    Accept either:
-    - full doc_id: "website:product:..."
-    - short product key: "category/subcategory/slug"
-    - unique slug: "serenicare" (only when globally unique)
-    """
     doc_id = matcher.resolve_doc_id(product_id)
     if not doc_id:
         raise HTTPException(
@@ -1512,21 +1427,13 @@ def _resolve_product_doc_id(matcher: ProductMatcher, product_id: str) -> str:
 
 @api_router.get("/products/list", tags=["Products"])
 async def api_list_products(
-    category: Optional[str] = Query(None, description="Filter by category (e.g. personal, business)."),
-    subcategory: Optional[str] = Query(None, description="Filter by subcategory (e.g. save-and-invest). Use with category."),
-    search: Optional[str] = Query(None, description="Search in product name and category; returns matching products."),
+    category: Optional[str] = Query(None),
+    subcategory: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
     matcher: ProductMatcher = Depends(lambda: product_matcher),
 ):
-    """
-    List products with optional filters.
-
-    - **category**: list products where category equals this (e.g. `?category=personal`).
-    - **subcategory**: narrow by subcategory (e.g. `?category=personal&subcategory=save-and-invest`).
-    - **search**: text search in name/category (e.g. `?search=savings`).
-    """
     try:
         if search and search.strip():
-            # Text search: use match_products, return product dicts
             scored = matcher.match_products(search.strip(), top_k=50)
             products = [p[2] for p in scored]
         elif category:
@@ -1552,7 +1459,6 @@ async def api_get_product_card(
     include_details: bool = False,
     matcher: ProductMatcher = Depends(lambda: product_matcher),
 ):
-    """Product card (RAG summary). Use by-id when product_id contains slashes."""
     try:
         doc_id = _resolve_product_doc_id(matcher, product_id)
         card = product_card_gen.generate_card(doc_id, False)
@@ -1561,14 +1467,12 @@ async def api_get_product_card(
         if include_details:
             card["details"] = await product_card_gen.get_product_details(doc_id)
 
-        # Present friendly ids outward
         public_id = matcher.get_public_id(doc_id) or doc_id
         card["product_id"] = public_id
         card["doc_id"] = doc_id
         if isinstance(card.get("details"), dict):
             card["details"]["product_id"] = public_id
             card["details"]["doc_id"] = doc_id
-            # Rewrite related_products ids if present
             rel = card["details"].get("related_products")
             if isinstance(rel, list):
                 for r in rel:
@@ -1589,7 +1493,6 @@ async def api_get_product_card_details(
     product_id: str,
     matcher: ProductMatcher = Depends(lambda: product_matcher),
 ):
-    """Detailed product information (Learn More) via RAG/LLM."""
     try:
         doc_id = _resolve_product_doc_id(matcher, product_id)
         details = await product_card_gen.get_product_details(doc_id)
@@ -1611,36 +1514,14 @@ async def api_get_product_card_details(
 
 
 @api_router.post("/forms/personal-accident/full", response_model=PersonalAccidentFullFormResponse, tags=["Forms"])
-async def submit_personal_accident_full_form(
-    body: PersonalAccidentFullFormRequest,
-    db: PostgresDB = Depends(get_db),
-):
-    """
-    Accept the entire Personal Accident application in one payload and create a quote.
-
-    This bypasses the guided chat step-by-step flow, so the frontend can collect all
-    details in a single (possibly multi-section) form and submit once.
-    """
+async def submit_personal_accident_full_form(body: PersonalAccidentFullFormRequest, db: PostgresDB = Depends(get_db)):
     from src.chatbot.flows.personal_accident import PersonalAccidentFlow
-
     try:
-        # Resolve external identifier (e.g. phone) to internal user UUID
         user = db.get_or_create_user(phone_number=body.user_id)
         internal_user_id = str(user.id)
-
-        # Reuse the existing PersonalAccidentFlow validations by running the
-        # step handlers sequentially against a shared data dict, but without
-        # touching the guided session state machine.
         flow = PersonalAccidentFlow(product_matcher, db)
-
         payload: Dict[str, Any] = dict(body.data or {})
-        data: Dict[str, Any] = {
-            "user_id": internal_user_id,
-            "product_id": "personal_accident",
-        }
-
-        # Normalize the flattened full-form payload into the same shape expected
-        # by the guided-flow validators, without creating a draft quote first.
+        data: Dict[str, Any] = {"user_id": internal_user_id, "product_id": "personal_accident"}
         quick_quote: Dict[str, Any] = {
             "first_name": payload.get("first_name") or payload.get("firstName", ""),
             "last_name": payload.get("surname") or payload.get("lastName", ""),
@@ -1652,22 +1533,14 @@ async def submit_personal_accident_full_form(
             "cover_limit_ugx": int(payload.get("coverLimitAmountUgx") or payload.get("cover_limit_amount_ugx") or 10_000_000),
         }
         data["quick_quote"] = quick_quote
-
-        # Run each logical step's validation + data shaping.
-        # Full-form payloads may intentionally omit quick-quote-only fields like DOB,
-        # so we keep normalized quick_quote data above and validate the remaining steps.
         await flow._step_personal_details(payload, data, internal_user_id)
         await flow._step_next_of_kin(payload, data, internal_user_id)
         await flow._step_previous_pa_policy(payload, data, internal_user_id)
         await flow._step_physical_disability(payload, data, internal_user_id)
         await flow._step_risky_activities(payload, data, internal_user_id)
         await flow._step_upload_national_id(payload, data, internal_user_id)
-
-        # Calculate premium using the same helper as the guided flow.
         sum_assured = int((data.get("quick_quote") or {}).get("cover_limit_ugx", 10_000_000))
         premium = flow._calculate_pa_premium(data, sum_assured)
-
-        # Persist a quote once, with all underwriting data collected at once.
         quote = db.create_quote(
             user_id=internal_user_id,
             product_id=data.get("product_id", "personal_accident"),
@@ -1677,7 +1550,6 @@ async def submit_personal_accident_full_form(
             pricing_breakdown=premium.get("breakdown"),
             product_name="Personal Accident",
         )
-
         return PersonalAccidentFullFormResponse(
             quote_id=str(quote.id),
             product_name="Personal Accident",
@@ -1687,14 +1559,9 @@ async def submit_personal_accident_full_form(
             breakdown=premium.get("breakdown", {}),
         )
     except FormValidationError as e:
-        # Mirror the chat/message validation error shape
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "validation_error",
-                "message": e.message,
-                "field_errors": e.field_errors,
-            },
+            detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors},
         )
     except Exception as e:
         logger.error(f"Error submitting Personal Accident full form: {str(e)}", exc_info=True)
@@ -1702,21 +1569,11 @@ async def submit_personal_accident_full_form(
 
 
 @api_router.post("/forms/motor-private/full", response_model=MotorPrivateFullFormResponse, tags=["Forms"])
-async def submit_motor_private_full_form(
-    body: MotorPrivateFullFormRequest,
-    db: PostgresDB = Depends(get_db),
-):
-    """Accept the full Motor Private quote form in one payload and create a quote.
-
-    This reuses MotorPrivateFlow.complete_flow so all motor-specific validations run
-    server-side and a quote is persisted once.
-    """
+async def submit_motor_private_full_form(body: MotorPrivateFullFormRequest, db: PostgresDB = Depends(get_db)):
     from src.chatbot.controllers.motor_private_controller import MotorPrivateController
-
     try:
         controller = MotorPrivateController(db)
         result = await controller.submit_full_form(body.user_id, body.data or {})
-
         return MotorPrivateFullFormResponse(
             quote_id=result["quote_id"],
             product_name=result["product_name"],
@@ -1726,11 +1583,7 @@ async def submit_motor_private_full_form(
     except FormValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "validation_error",
-                "message": e.message,
-                "field_errors": e.field_errors,
-            },
+            detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors},
         )
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1740,42 +1593,24 @@ async def submit_motor_private_full_form(
 
 
 @api_router.post("/forms/travel-insurance/full", response_model=TravelInsuranceFullFormResponse, tags=["Forms"])
-async def submit_travel_insurance_full_form(
-    body: TravelInsuranceFullFormRequest,
-    db: PostgresDB = Depends(get_db),
-):
-    """
-    Accept the entire Travel Insurance application in one payload and create a quote.
-
-    Runs all server-side field validations via TravelInsuranceController then
-    calculates the premium and persists a quote record.
-    """
+async def submit_travel_insurance_full_form(body: TravelInsuranceFullFormRequest, db: PostgresDB = Depends(get_db)):
     from src.chatbot.controllers.travel_insurance_controller import TravelInsuranceController
     from src.integrations.policy.premium import premium_service
-
     try:
         user = db.get_or_create_user(phone_number=body.user_id)
         internal_user_id = str(user.id)
-
         controller = TravelInsuranceController(db)
         payload: Dict[str, Any] = dict(body.data or {})
-
         app = controller.create_application(internal_user_id, {})
         app_id = app["id"]
-
-        # Validate each section via the controller (raises FormValidationError on bad input)
         controller.update_about_you(app_id, payload)
         controller.update_travel_party_and_trip(app_id, payload)
         controller.update_data_consent(app_id, payload)
         controller.update_traveller_details(app_id, payload)
-
-        # Optional sections — only validate if the client included relevant fields
         if any(k in payload for k in ("ec_surname", "ec_relationship", "ec_phone_number", "ec_email")):
             controller.update_emergency_contact(app_id, payload)
         if any(k in payload for k in ("bank_name", "account_holder_name", "account_number")):
             controller.update_bank_details(app_id, payload)
-
-        # Build the data dict that the premium calculator expects
         data: Dict[str, Any] = {
             "selected_product": payload.get("selected_product") or {"id": payload.get("product_id", "worldwide_essential")},
             "travel_party_and_trip": {
@@ -1792,10 +1627,8 @@ async def submit_travel_insurance_full_form(
             },
         }
         pricing = premium_service.calculate_sync("travel_insurance", {"data": data})
-
         result = controller.finalize_and_create_quote(app_id, internal_user_id, pricing)
         quote_id = (result or {}).get("quote_id") or ""
-
         return TravelInsuranceFullFormResponse(
             quote_id=quote_id,
             product_name=(data["selected_product"] or {}).get("label", "Travel Insurance"),
@@ -1806,11 +1639,7 @@ async def submit_travel_insurance_full_form(
     except FormValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "validation_error",
-                "message": e.message,
-                "field_errors": e.field_errors,
-            },
+            detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors},
         )
     except Exception as e:
         logger.error(f"Error submitting Travel Insurance full form: {str(e)}", exc_info=True)
@@ -1818,43 +1647,25 @@ async def submit_travel_insurance_full_form(
 
 
 @api_router.post("/forms/serenicare/full", response_model=SerenicareFullFormResponse, tags=["Forms"])
-async def submit_serenicare_full_form(
-    body: SerenicareFullFormRequest,
-    db: PostgresDB = Depends(get_db),
-):
-    """
-    Accept the entire Serenicare application in one payload and create a quote.
-
-    Runs all server-side field validations via SerenicareController then
-    calculates the premium and persists a quote record.
-    """
+async def submit_serenicare_full_form(body: SerenicareFullFormRequest, db: PostgresDB = Depends(get_db)):
     from src.chatbot.controllers.serenicare_controller import SerenicareController
     from src.integrations.policy.premium import premium_service
-
     try:
         user = db.get_or_create_user(phone_number=body.user_id)
         internal_user_id = str(user.id)
-
         controller = SerenicareController(db)
         payload: Dict[str, Any] = dict(body.data or {})
-
         app = controller.create_application(internal_user_id, {})
         app_id = app["id"]
-
-        # Validate each section (raises FormValidationError on bad input)
         controller.update_about_you(app_id, payload)
         controller.update_plan_selection(app_id, payload)
         controller.update_optional_benefits(app_id, payload)
         controller.update_medical_conditions(app_id, payload)
         controller.update_cover_personalization(app_id, payload)
-
-        # Determine selected plan for premium calculation
         plan = {"id": payload.get("plan_option", "essential")}
         pricing = premium_service.calculate_sync("serenicare", {"data": payload, "plan": plan})
-
         result = controller.finalize_and_create_quote(app_id, internal_user_id, pricing)
         quote_id = (result or {}).get("quote_id") or ""
-
         return SerenicareFullFormResponse(
             quote_id=quote_id,
             product_name="Serenicare",
@@ -1865,11 +1676,7 @@ async def submit_serenicare_full_form(
     except FormValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "validation_error",
-                "message": e.message,
-                "field_errors": e.field_errors,
-            },
+            detail={"error": "validation_error", "message": e.message, "field_errors": e.field_errors},
         )
     except Exception as e:
         logger.error(f"Error submitting Serenicare full form: {str(e)}", exc_info=True)
@@ -1878,15 +1685,10 @@ async def submit_serenicare_full_form(
 
 @api_router.post("/quotes/generate", response_model=QuoteResponse, tags=["Quotes"])
 async def generate_quote(request: QuoteRequest, db: PostgresDB = Depends(get_db)):
-    """Generate an insurance quote from underwriting data."""
     try:
-        # This would use the quotation flow
         from src.chatbot.flows.quotation import QuotationFlow
-
         quotation_flow = QuotationFlow(product_matcher, db)
         quote_data = await quotation_flow._calculate_premium(request.underwriting_data)
-
-        # Save quote to database
         quote = db.create_quote(
             user_id=request.user_id,
             product_id=request.product_id,
@@ -1895,7 +1697,6 @@ async def generate_quote(request: QuoteRequest, db: PostgresDB = Depends(get_db)
             underwriting_data=request.underwriting_data,
             pricing_breakdown=quote_data["breakdown"],
         )
-
         return QuoteResponse(
             quote_id=str(quote.id),
             product_name=quote_data["product_name"],
@@ -1903,7 +1704,6 @@ async def generate_quote(request: QuoteRequest, db: PostgresDB = Depends(get_db)
             sum_assured=quote_data["sum_assured"],
             valid_until=quote.valid_until.isoformat(),
         )
-
     except Exception as e:
         logger.error(f"Error generating quote: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1911,13 +1711,10 @@ async def generate_quote(request: QuoteRequest, db: PostgresDB = Depends(get_db)
 
 @api_router.get("/quotes/{quote_id}", tags=["Quotes"])
 async def get_quote(quote_id: str, db: PostgresDB = Depends(get_db)):
-    """Get a quote by ID."""
     try:
         quote = db.get_quote(quote_id)
-
         if not quote:
             raise HTTPException(status_code=404, detail="Quote not found")
-
         return {
             "quote_id": str(quote.id),
             "product_id": quote.product_id,
@@ -1928,7 +1725,6 @@ async def get_quote(quote_id: str, db: PostgresDB = Depends(get_db)):
             "valid_until": quote.valid_until.isoformat() if quote.valid_until else None,
             "generated_at": quote.generated_at.isoformat(),
         }
-
     except HTTPException:
         raise
     except Exception as e:
@@ -1938,18 +1734,13 @@ async def get_quote(quote_id: str, db: PostgresDB = Depends(get_db)):
 
 @api_router.get("/sessions/{session_id}/history", tags=["Sessions"])
 async def get_conversation_history(session_id: str, limit: int = 50):
-    """Get conversation history for a session."""
     try:
         session = state_manager.get_session(session_id)
-
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-
         messages = postgres_db.get_conversation_history(session["conversation_id"], limit=limit)
-
         msg_list = [{"role": msg.role, "content": msg.content, "timestamp": msg.timestamp.isoformat()} for msg in reversed(messages)]
         return {"session_id": session_id, "messages": msg_list}
-
     except HTTPException:
         raise
     except Exception as e:
@@ -1959,11 +1750,9 @@ async def get_conversation_history(session_id: str, limit: int = 50):
 
 @api_router.delete("/sessions/{session_id}", tags=["Sessions"])
 async def end_session(session_id: str, ended_by: str = "user"):
-    """End a chatbot session."""
     try:
         state_manager.end_session(session_id, ended_by=ended_by)
         return {"message": "Session ended successfully"}
-
     except Exception as e:
         logger.error(f"Error ending session: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1974,26 +1763,19 @@ app.include_router(api_router, prefix="/api/v1")
 
 
 def _strip_heading_from_text(text: str, heading: str) -> str:
-    """
-    Remove duplicated heading from the start of text so the API returns
-    content-only in "text" when "heading" is already present.
-    Handles "Heading\\ncontent", "Q: Heading\\nA: answer" (FAQ), and similar.
-    """
     if not text or not heading:
         return text
     t, h = text.strip(), heading.strip()
     if not h:
         return text
-    # "Heading\ncontent" or "Heading content"
     if t.lower().startswith(h.lower()):
-        rest = t[len(h) :].lstrip("\n\t ")
+        rest = t[len(h):].lstrip("\n\t ")
         if rest.upper().startswith("A:") and "Q:" in t[:4]:
             rest = rest[2:].lstrip()
         return rest if rest else t
-    # FAQ: "Q: Heading\nA: answer" -> return just the answer
     q_prefix = "Q: " + h
     if t.lower().startswith(q_prefix.lower()):
-        after = t[len(q_prefix) :].lstrip()
+        after = t[len(q_prefix):].lstrip()
         if after.upper().startswith("A:"):
             return after[2:].lstrip()
         return after
@@ -2001,10 +1783,6 @@ def _strip_heading_from_text(text: str, heading: str) -> str:
 
 
 def _load_product_sections(product_id: str) -> Dict[str, List[Dict[str, str]]]:
-    """
-    Load typed sections for a product from website_chunks.jsonl.
-    Each entry's "text" is trimmed so it does not repeat the "heading".
-    """
     chunks_path = Path(__file__).parent.parent.parent / "data" / "processed" / "website_chunks.jsonl"
     if not chunks_path.exists():
         raise HTTPException(status_code=500, detail="Product chunks file not found")
@@ -2033,10 +1811,7 @@ def _load_product_sections(product_id: str) -> Dict[str, List[Dict[str, str]]]:
 # ============================================================================
 @app.on_event("startup")
 async def startup_event():
-    """Initialize on startup"""
     logger.info("Starting Old Mutual Chatbot API...")
-
-    # Log sanitized DB target details (no credentials) for connectivity debugging.
     db_url = os.getenv("DATABASE_URL", "")
     if db_url:
         try:
@@ -2059,7 +1834,6 @@ async def startup_event():
 
     logger.info("Database schema initialization is managed by Alembic migrations")
 
-    # Test Redis connection
     if redis_cache.ping():
         logger.info("Redis connection successful")
     else:
@@ -2068,7 +1842,6 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Cleanup on shutdown"""
     logger.info("Shutting down Old Mutual Chatbot API...")
 
 
