@@ -1068,15 +1068,61 @@ async def get_ai_performance_metrics(
             {
                 "category": (e.payload.get("intent") or "Unknown").replace("_", " ").title(),
                 "query": (e.payload.get("user_message") or "")[:60],
+                "confidence": round(conf * 100, 1),
                 "severity": severity,
                 "frequency": 1,
             }
         )
 
+    total_intent_events = len(intent_events)
+    intent_counts = Counter({intent: len(events) for intent, events in intent_groups.items()})
+
+    high_volume_intents = []
+    if total_intent_events > 0:
+        for intent, count in intent_counts.most_common(3):
+            share = (count / total_intent_events) * 100
+            if share >= 15:
+                high_volume_intents.append((intent.replace("_", " ").title(), round(share)))
+
+    if total_intent_events == 0:
+        suggested_intents_note = "No recent intent traffic to analyze yet."
+    elif high_volume_intents:
+        top_list = ", ".join([f"{name} ({share}%)" for name, share in high_volume_intents])
+        suggested_intents_note = f"Top intent volume: {top_list}. Review overlap for consolidation."
+    else:
+        suggested_intents_note = f"Intent traffic is spread across {len(intent_groups)} categories; no dominant overlap signal."
+
+    if total_intent_events == 0:
+        training_needs_note = "No recent intent-confidence data available."
+    else:
+        low_conf_rate = (len(low_conf_events) / total_intent_events) * 100
+        weakest_intent = None
+        weakest_conf = 100.0
+        for intent, events in intent_groups.items():
+            confidences = [
+                float((item.get("payload") or {}).get("confidence", 0.0))
+                for item in events
+                if (item.get("payload") or {}).get("confidence") is not None
+            ]
+            if len(confidences) < 3:
+                continue
+            avg_conf = _avg(confidences) * 100
+            if avg_conf < weakest_conf:
+                weakest_conf = avg_conf
+                weakest_intent = intent.replace("_", " ").title()
+
+        if weakest_intent:
+            training_needs_note = (
+                f"{low_conf_rate:.1f}% of intent events are low-confidence; prioritize {weakest_intent} "
+                f"({weakest_conf:.0f}% avg confidence)."
+            )
+        else:
+            training_needs_note = f"{low_conf_rate:.1f}% of intent events are low-confidence; gather more labeled samples."
+
     learning_ops = [
         {"title": "Unanswered Gaps", "note": f"{len(low_conf_events)} low-confidence topics detected."},
-        {"title": "Suggested Intents", "note": "Review high-volume intents for consolidation."},
-        {"title": "Training Needs", "note": "Check confidence band drops in recent intents."},
+        {"title": "Suggested Intents", "note": suggested_intents_note},
+        {"title": "Training Needs", "note": training_needs_note},
     ]
 
     escalations = db.list_escalations(current_start, now)
