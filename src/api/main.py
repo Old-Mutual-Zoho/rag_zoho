@@ -838,6 +838,7 @@ async def get_ai_performance_metrics(
         message_counts.append(row.get("message_count", 0))
 
     avg_duration = _avg(durations) if durations else 0.0
+    avg_messages = _avg(message_counts) if message_counts else 0.0
     completion_rate = current["resolution_rate"]
     drop_off_rate = current["fallback_rate"]
 
@@ -847,9 +848,10 @@ async def get_ai_performance_metrics(
             "value": _format_count(current["conversations"]),
             "change": _fmt_delta(_pct_change(current["conversations"], previous["conversations"]), 0),
         },
-        {"label": "Completion Rate", "value": _fmt_pct(completion_rate), "change": _fmt_delta(_delta(completion_rate, previous["resolution_rate"]))},
-        {"label": "Drop-off Rate", "value": _fmt_pct(drop_off_rate), "change": _fmt_delta(_delta(drop_off_rate, previous["fallback_rate"]))},
+        {"label": "AI Resolution Rate", "value": _fmt_pct(completion_rate), "change": _fmt_delta(_delta(completion_rate, previous["resolution_rate"]))},
+        {"label": "Fallback Rate", "value": _fmt_pct(drop_off_rate), "change": _fmt_delta(_delta(drop_off_rate, previous["fallback_rate"]))},
         {"label": "Avg Length", "value": _fmt_duration(avg_duration), "change": _fmt_delta(0.0, 0)},
+        {"label": "Avg Messages", "value": f"{avg_messages:.1f}", "change": _fmt_delta(0.0, 0)},
     ]
 
     quality_metrics.extend(
@@ -860,7 +862,7 @@ async def get_ai_performance_metrics(
                 "change": f"{csat_delta:+.1f}" if csat_current > 0 else "0",
             },
             {
-                "label": "Agent Join Rate",
+                "label": "Agent Pickup Rate",
                 "value": _fmt_pct(current["agent_join_rate"]),
                 "change": _fmt_delta(_delta(current["agent_join_rate"], previous.get("agent_join_rate", 0.0))),
             },
