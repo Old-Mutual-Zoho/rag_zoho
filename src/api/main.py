@@ -1972,6 +1972,7 @@ def _build_event_message(event_type: str, payload: Dict[str, Any], created_at: O
         "timestamp": _iso_or_none(created_at),
         "meta": event_type,
         "source": "conversation_event",
+        "metadata": payload,
     }
 
 
@@ -1992,6 +1993,7 @@ def _merge_chat_console_messages(session_id: str, conversation_id: Optional[str]
                         "timestamp": _iso_or_none(getattr(msg, "timestamp", None)),
                         "meta": role if role not in {"user", "assistant", "agent"} else None,
                         "source": "database_message",
+                        "metadata": getattr(msg, "message_metadata", {}) or {},
                     }
                 )
         except Exception as exc:
@@ -2061,10 +2063,13 @@ def _build_chat_console_queue_item(escalation: Any, db: PostgresDB, prior_counts
         "avatar": _avatar_from_name(customer_name),
         "status": _derive_queue_status(escalation),
         "assignee": str(getattr(escalation, "agent_id", None) or "Unassigned"),
+        "mode": str(getattr(conversation, "mode", None) or "conversational"),
+        "customerKycCompleted": bool(getattr(user, "kyc_completed", False)),
         "memberTier": str(metadata.get("member_tier") or "Customer"),
         "channel": channel,
         "phone": phone_number,
         "email": customer_email,
+        "escalationMetadata": metadata,
         "journey": ["Waiting", "Escalated", "Active", "Resolved", "Closed"],
         "summary": {
             "escalationReason": str(getattr(escalation, "escalation_reason", None) or metadata.get("reason") or "Unspecified"),
