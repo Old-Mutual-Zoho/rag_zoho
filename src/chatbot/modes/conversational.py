@@ -376,6 +376,38 @@ def _is_fallback_like_answer(answer: str) -> bool:
     return any(marker in lowered for marker in fallback_markers)
 
 
+def _is_incomplete_smalltalk_reply(text: str) -> bool:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return True
+
+    tokens = re.findall(r"\b[\w']+\b", cleaned.lower())
+    if not tokens:
+        return True
+
+    dangling_last_words = {
+        "to",
+        "for",
+        "with",
+        "about",
+        "and",
+        "or",
+        "the",
+        "a",
+        "an",
+        "of",
+        "our",
+        "your",
+    }
+    if tokens[-1] in dangling_last_words:
+        return True
+
+    if len(tokens) <= 4 and cleaned[-1] not in ".!?":
+        return True
+
+    return False
+
+
 def _estimate_response_confidence(
     response: Dict[str, Any],
     retrieval_results: List[Dict[str, Any]],
@@ -448,6 +480,40 @@ def _build_product_choice_clarification(topic_label: Optional[str], options: Lis
         choices = ", ".join(clean_options[:4])
         return f"Which {base} option do you mean? I can tell you more about {choices}."
     return f"Which {base} product do you mean? Tell me the option you want more detail on."
+
+
+def _is_ambiguous_motor_query(message: str) -> bool:
+    m = (message or "").strip().lower()
+    if not m:
+        return False
+
+    mentions_motor = any(term in m for term in ["motor", "car", "vehicle", "auto"])
+    if not mentions_motor:
+        return False
+
+    explicit_motor_products = [
+        "motor private",
+        "motor commercial",
+        "private motor",
+        "commercial motor",
+        "private vehicle",
+        "commercial vehicle",
+        "trucksure",
+        "general cartage",
+        "own goods",
+        "passenger service vehicle",
+        "psv",
+        "tractor",
+    ]
+    if any(term in m for term in explicit_motor_products):
+        return False
+
+    ambiguous_triggers = [
+        "motor insurance",
+        "motor cover",
+        "motor accident",
+    ]
+    return any(term in m for term in ambiguous_triggers)
 
 
 def _infer_recommendation_hint(message: str) -> str | None:
@@ -687,6 +753,8 @@ class ConversationalMode:
                 if self.small_talk_responder is not None:
                     try:
                         answer_text = await self.small_talk_responder.respond(message, no_ret_kind)
+                        if _is_incomplete_smalltalk_reply(answer_text):
+                            answer_text = self._build_no_retrieval_reply(no_ret_kind)
                     except Exception:
                         answer_text = self._build_no_retrieval_reply(no_ret_kind)
                 else:
@@ -734,6 +802,23 @@ class ConversationalMode:
                     self.state_manager.end_session(session_id, ended_by="bot")
 
                 return payload
+
+        if form_data is None and _is_ambiguous_motor_query(message):
+            motor_options = ["Motor Private", "Motor Commercial"]
+            session = self.state_manager.get_session(session_id) or {}
+            ctx = dict(session.get("context") or {})
+            ctx.pop("pending_section_offer", None)
+            ctx["pending_product_choice"] = {
+                "topic_label": "motor insurance",
+                "options": motor_options,
+            }
+            self.state_manager.update_session(session_id, {"context": ctx})
+            return {
+                "mode": "conversational",
+                "response": _build_product_choice_clarification("motor insurance", motor_options),
+                "intent": "clarify_product",
+                "confidence": 0.9,
+            }
 
         # Detect coarse intent (quote/buy/learn/etc.)
         broad_query = _is_broad_product_query(message)

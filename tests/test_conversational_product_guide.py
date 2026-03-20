@@ -68,6 +68,11 @@ class DummyGuidedTrackStarts:
         }
 
 
+class TruncatedSmallTalkResponder:
+    async def respond(self, message: str, label: str) -> str:
+        return "Hello there! Welcome to"
+
+
 class DummyMatcher:
     def match_products(self, query: str, top_k: int = 3):
         # Return a travel insurance-like product match with URL
@@ -270,11 +275,11 @@ async def test_pending_offer_is_replaced_when_user_switches_to_different_product
     conv = ConversationalMode(DummyRAG(), TravelMotorMatcher(), sm)
 
     await conv.process("tell me about travel insurance", session_id, str(user.id))
-    switched = await conv.process("tell me about motor insurance", session_id, str(user.id))
+    switched = await conv.process("tell me about motor private", session_id, str(user.id))
     out = await conv.process("yes", session_id, str(user.id))
 
     assert switched["mode"] == "conversational"
-    assert "motor insurance" in switched["response"].lower()
+    assert "motor" in switched["response"].lower()
     assert out["mode"] == "conversational"
     assert "benefits of motor insurance" in out["response"].lower()
 
@@ -329,6 +334,47 @@ async def test_broad_motor_query_yes_prompts_for_product_choice_instead_of_wrong
     assert "motor private" in first["response"].lower()
     assert "motor commercial" in first["response"].lower()
     assert out["mode"] == "conversational"
+    assert "which motor insurance option do you mean" in out["response"].lower()
+    assert "motor private" in out["response"].lower()
+    assert "motor commercial" in out["response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_truncated_greeting_falls_back_to_full_default_reply():
+    db = PostgresDB()
+    redis = RedisCache()
+    sm = StateManager(redis, db)
+
+    user = db.get_or_create_user(phone_number="256700000015")
+    session_id = sm.create_session(str(user.id))
+
+    conv = ConversationalMode(DummyRAG(), NoMatchMatcher(), sm)
+    conv.small_talk_responder = TruncatedSmallTalkResponder()
+
+    out = await conv.process("Hello", session_id, str(user.id))
+
+    assert out["mode"] == "conversational"
+    assert out["response"] == (
+        "Hey! I’m MIA, your Old Mutual assistant.\n"
+        "You can ask me about our products, benefits, coverage, or how to get a quote."
+    )
+
+
+@pytest.mark.asyncio
+async def test_motor_accident_query_prompts_motor_product_clarification():
+    db = PostgresDB()
+    redis = RedisCache()
+    sm = StateManager(redis, db)
+
+    user = db.get_or_create_user(phone_number="256700000016")
+    session_id = sm.create_session(str(user.id))
+
+    conv = ConversationalMode(DummyRAG(), BroadMotorMatcher(), sm)
+
+    out = await conv.process("tell me about motor accident", session_id, str(user.id))
+
+    assert out["mode"] == "conversational"
+    assert out["intent"] == "clarify_product"
     assert "which motor insurance option do you mean" in out["response"].lower()
     assert "motor private" in out["response"].lower()
     assert "motor commercial" in out["response"].lower()
