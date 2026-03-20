@@ -93,6 +93,28 @@ class FollowUpMatcher:
         return DummyMatcher().match_products(query, top_k=top_k)
 
 
+class TravelMotorMatcher:
+    def match_products(self, query: str, top_k: int = 3):
+        lowered = (query or "").lower()
+        if "motor insurance" in lowered or "car insurance" in lowered or "motor private" in lowered:
+            return [
+                (
+                    2.0,
+                    0,
+                    {
+                        "product_id": "website:product:other/general/motor-insurance",
+                        "name": "Motor Insurance",
+                        "category_name": "Motor",
+                        "sub_category_name": "Private",
+                        "url": "https://www.oldmutual.co.ug/motor",
+                    },
+                )
+            ][:top_k]
+        if "travel insurance" in lowered:
+            return DummyMatcher().match_products(query, top_k=top_k)
+        return []
+
+
 class NoMatchMatcher:
     def match_products(self, query: str, top_k: int = 3):
         return []
@@ -161,6 +183,99 @@ async def test_product_guide_button_action_returns_section_answer():
     assert out["mode"] == "conversational"
     assert out["response"].startswith("ANSWER:")
     assert "benefits" in out["response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_product_guide_accepts_yes_share_for_pending_benefits_offer():
+    db = PostgresDB()
+    redis = RedisCache()
+    sm = StateManager(redis, db)
+
+    user = db.get_or_create_user(phone_number="256700000010")
+    session_id = sm.create_session(str(user.id))
+
+    conv = ConversationalMode(DummyRAG(), DummyMatcher(), sm)
+
+    await conv.process("tell me about travel insurance", session_id, str(user.id))
+    out = await conv.process("yes share", session_id, str(user.id))
+
+    assert out["mode"] == "conversational"
+    assert out["response"].startswith("ANSWER:")
+    assert "benefits" in out["response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_pending_benefits_offer_survives_intervening_followup_message():
+    db = PostgresDB()
+    redis = RedisCache()
+    sm = StateManager(redis, db)
+
+    user = db.get_or_create_user(phone_number="256700000011")
+    session_id = sm.create_session(str(user.id))
+
+    conv = ConversationalMode(DummyRAG(), FollowUpMatcher(), sm)
+
+    await conv.process("tell me about travel insurance", session_id, str(user.id))
+    mid = await conv.process("what about waiting period?", session_id, str(user.id))
+    out = await conv.process("yes", session_id, str(user.id))
+
+    assert mid["mode"] == "conversational"
+    assert "travel insurance" in conv.rag.retrieve_calls[-2]["query"].lower()
+    assert out["mode"] == "conversational"
+    assert out["response"].startswith("ANSWER:")
+    assert "benefits" in out["response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_pending_offer_is_replaced_when_user_switches_to_different_product():
+    db = PostgresDB()
+    redis = RedisCache()
+    sm = StateManager(redis, db)
+
+    user = db.get_or_create_user(phone_number="256700000012")
+    session_id = sm.create_session(str(user.id))
+
+    conv = ConversationalMode(DummyRAG(), TravelMotorMatcher(), sm)
+
+    await conv.process("tell me about travel insurance", session_id, str(user.id))
+    switched = await conv.process("tell me about motor insurance", session_id, str(user.id))
+    out = await conv.process("yes", session_id, str(user.id))
+
+    assert switched["mode"] == "conversational"
+    assert "motor insurance" in switched["response"].lower()
+    assert out["mode"] == "conversational"
+    assert "benefits of motor insurance" in out["response"].lower()
+
+
+@pytest.mark.asyncio
+async def test_section_clarification_uses_prior_product_topic_name_when_available():
+    db = PostgresDB()
+    redis = RedisCache()
+    sm = StateManager(redis, db)
+
+    user = db.get_or_create_user(phone_number="256700000013")
+    session_id = sm.create_session(str(user.id))
+
+    sm.update_session(
+        session_id,
+        {
+            "context": {
+                "product_topic": {
+                    "name": "Travel Insurance",
+                    "doc_id": None,
+                    "url": "https://www.oldmutual.co.ug/",
+                }
+            }
+        },
+    )
+
+    conv = ConversationalMode(DummyRAG(), NoMatchMatcher(), sm)
+    out = await conv.process("what are the benefits?", session_id, str(user.id))
+
+    assert out["mode"] == "conversational"
+    assert out["intent"] == "clarify_section"
+    assert "travel insurance" in out["response"].lower()
+    assert "benefits, coverage, exclusions, eligibility, or pricing" in out["response"].lower()
 
 
 @pytest.mark.asyncio

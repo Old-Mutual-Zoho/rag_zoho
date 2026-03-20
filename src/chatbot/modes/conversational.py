@@ -167,7 +167,39 @@ def _is_broad_product_query(message: str) -> bool:
 
 def _is_affirmative(message: str) -> bool:
     m = (message or "").strip().lower()
-    return m in {"yes", "y", "yeah", "yep", "sure", "ok", "okay", "please", "go ahead", "go on"}
+    if not m:
+        return False
+
+    exact_matches = {"yes", "y", "yeah", "yep", "sure", "ok", "okay", "please", "go ahead", "go on"}
+    if m in exact_matches:
+        return True
+
+    affirmative_prefixes = (
+        "yes ",
+        "yeah ",
+        "yep ",
+        "sure ",
+        "ok ",
+        "okay ",
+        "please ",
+        "go ahead ",
+        "go on ",
+    )
+    if m.startswith(affirmative_prefixes):
+        return True
+
+    share_phrases = {
+        "share",
+        "share it",
+        "share them",
+        "share that",
+        "please share",
+        "show me",
+        "show them",
+        "tell me",
+        "tell me more",
+    }
+    return m in share_phrases
 
 
 def _is_negative(message: str) -> bool:
@@ -200,6 +232,18 @@ def _is_explicit_guided_intent(message: str) -> bool:
     wants_quote = any(word in m for word in ["want", "need", "get"]) and any(word in m for word in ["quote", "quotation"])
     wants_purchase = any(word in m for word in ["want", "need", "help me", "can i"]) and any(word in m for word in ["apply", "buy", "purchase"])
     return wants_quote or wants_purchase
+
+
+def _has_confident_product_switch(products: List[Any], topic: Dict[str, Any]) -> bool:
+    """Detect when the user has clearly moved to a different product topic."""
+    if not products or not topic or not topic.get("doc_id"):
+        return False
+
+    top_score = float(products[0][0] or 0.0)
+    second_score = float(products[1][0] or 0.0) if len(products) > 1 else 0.0
+    is_confident = (top_score >= 1.2) and (top_score >= second_score + 0.5)
+    top_doc_id = products[0][2].get("product_id") or products[0][2].get("doc_id")
+    return bool(is_confident and top_doc_id and top_doc_id != topic.get("doc_id"))
 
 
 def _should_reuse_product_topic(message: str, topic: Dict[str, Any]) -> bool:
@@ -389,6 +433,14 @@ def _build_overview_query(product_name: str) -> str:
     return f"Explain {base} insurance product, its benefits, coverage, and eligibility."
 
 
+def _build_product_aware_clarification(topic_name: Optional[str]) -> str:
+    base = (topic_name or "this product").strip()
+    return (
+        f"Are you still asking about {base}? "
+        f"I can help with its benefits, coverage, exclusions, eligibility, or pricing."
+    )
+
+
 def _infer_recommendation_hint(message: str) -> str | None:
     m = (message or "").lower()
     if "accident" in m:
@@ -558,10 +610,6 @@ class ConversationalMode:
             if _is_negative(message):
                 ctx.pop("pending_section_offer", None)
                 self.state_manager.update_session(session_id, {"context": ctx})
-            elif (message or "").strip():
-                # User asked something else; clear the pending offer to avoid accidental triggers.
-                ctx.pop("pending_section_offer", None)
-                self.state_manager.update_session(session_id, {"context": ctx})
 
         # If the user is explicitly asking for a product section (benefits/coverage/etc),
         # resolve the product and answer via the product-guide path (filters by doc_id).
@@ -587,6 +635,13 @@ class ConversationalMode:
                 # If we still don't know which product, ask a single clarifying question.
                 topic = (ctx.get("product_topic") or {}) if isinstance(ctx, dict) else {}
                 if not topic.get("doc_id"):
+                    if topic.get("name"):
+                        return {
+                            "mode": "conversational",
+                            "response": _build_product_aware_clarification(topic.get("name")),
+                            "intent": "clarify_section",
+                            "confidence": 0.9,
+                        }
                     return {
                         "mode": "conversational",
                         "response": (
@@ -669,6 +724,12 @@ class ConversationalMode:
         session = self.state_manager.get_session(session_id) or {}
         ctx = dict(session.get("context") or {})
         topic = (ctx.get("product_topic") or {}) if isinstance(ctx, dict) else {}
+
+        if ctx.get("pending_section_offer") and _has_confident_product_switch(products, topic):
+            ctx.pop("pending_section_offer", None)
+            self.state_manager.update_session(session_id, {"context": ctx})
+            topic = (ctx.get("product_topic") or {}) if isinstance(ctx, dict) else {}
+
         should_reuse_topic = _should_reuse_product_topic(message, topic)
         recent_history = self._get_recent_history(session_id)
         query_with_topic = _augment_query_with_topic(
